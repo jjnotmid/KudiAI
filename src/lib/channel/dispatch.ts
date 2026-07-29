@@ -1,78 +1,328 @@
 import { randomUUID } from "node:crypto";
-import { peekConfirmation, verifyConfirmation } from "@/lib/agent/confirm";
+import { createConfirmation, peekConfirmation, verifyConfirmation } from "@/lib/agent/confirm";
+import { hashPin, isValidPinFormat, resolvePinSetup, verifyPin } from "@/lib/agent/pin";
 import { runAgent } from "@/lib/agent/run";
-import { getMoneyProvider } from "@/lib/bmoni";
+import { getLiveMoneyProvider, getMoneyProvider } from "@/lib/bmoni";
+import { parseTransferDraft } from "@/lib/bmoni/banks";
+import { provisionAccount } from "@/lib/bmoni/onboard";
 import { formatMoney } from "@/lib/money/format";
-import { money } from "@/lib/money/types";
+import { parseAmount } from "@/lib/money/parse";
+import { money, type Money } from "@/lib/money/types";
 import { checkRateLimit } from "@/lib/ratelimit";
 import { getStore } from "@/lib/store";
+import type { KudiEvent } from "@/lib/store/types";
 import { log } from "@/lib/log";
 import type { Channel, IncomingMessage } from "./types";
 
 /**
- * Channel-agnostic message + callback dispatcher. Turns a raw incoming message
- * into an agent reply, and — crucially — executes value-moving actions ONLY when
- * the user taps confirm, re-verifying the HMAC token server-side. The LLM never
- * triggers a transfer.
+ * Channel-agnostic dispatcher. Flow:
+ *  1. First contact → onboard, ask the user to set a 4-digit transaction PIN.
+ *  2. Normal chat → the agent. A value-moving intent produces a slip.
+ *  3. To send, the user enters their PIN (verified server-side) — this, plus the
+ *     HMAC token re-check + single-use nonce, is what authorises the transfer.
+ *     The LLM never triggers money movement.
  */
 
-/** chatId → Kudi session id. */
+const LARGE_TRANSFER_MINOR = 5_000_000; // ₦50,000 → flag for the admin (not block)
+const INJECTION = /ignore\s+(all|the|previous|your)\s+(instruction|rule)|send\s+.*\baccount\s+\d{6,}/i;
+const QUICK_BUTTONS = [
+  [{ label: "Check balance", data: "quick:balance", kind: "default" }, { label: "Create card", data: "quick:card", kind: "default" }],
+  [{ label: "Send money", data: "quick:send", kind: "default" }, { label: "Save money", data: "quick:save", kind: "default" }],
+] as const;
+
 function sessionFor(chatId: string): string {
   return `tg:${chatId}`;
 }
 
-/**
- * Pending confirmations: short ref → { token, sessionId }. Held here because a
- * Telegram callback_data is capped at 64 bytes and the token is longer.
- * Process-local; moving this into the Store is the webhook-multi-instance task.
- */
-const pending = new Map<string, { token: string; sessionId: string; expiresAt: number }>();
+type TransferDraft = {
+  amountMinor?: number;
+  currency: "NGN" | "USD";
+  accountNumber?: string;
+  bank?: string;
+  recipientName?: string;
+};
 
+/** Per-session conversational state for the PIN handshake and transfer details. Process-local. */
+type Flow = { kind: "set_pin"; pendingPin?: string } | { kind: "pin_for"; ref: string; tries: number } | { kind: "await_bank_transfer"; draft: TransferDraft };
+const flow = new Map<string, Flow>();
+
+/** Pending confirmations: ref → token (Telegram callback_data is ≤64 bytes). */
+const pending = new Map<string, { token: string; sessionId: string; expiresAt: number }>();
 function stashConfirm(token: string, sessionId: string): string {
   const ref = randomUUID().slice(0, 12);
   pending.set(ref, { token, sessionId, expiresAt: Date.now() + 100_000 });
   return ref;
 }
 
+async function ev(sessionId: string, event: KudiEvent): Promise<void> {
+  try {
+    await getStore().recordEvent(sessionId, event);
+  } catch {
+    /* analytics is best-effort */
+  }
+}
+
 export async function handleMessage(channel: Channel, msg: IncomingMessage): Promise<void> {
   const sessionId = sessionFor(msg.chatId);
+  const store = getStore();
 
   const gate = checkRateLimit(sessionId, "message");
   if (!gate.allowed) {
     await channel.send({ chatId: msg.chatId, text: "You dey go too fast. Wait small make we continue." });
     return;
   }
-  if (!msg.text.trim()) {
+  const text = msg.text.trim();
+  const lower = text.toLowerCase();
+  if (!text) {
     await channel.send({ chatId: msg.chatId, text: "Talk to me — check balance, make card, or send money." });
     return;
   }
 
-  const store = getStore();
-  try {
-    log("info", "msg.in", { sessionId, voice: msg.fromVoice, text: msg.text });
-    const priorTurns = await store.loadTurns(sessionId);
-    const result = await runAgent(sessionId, priorTurns, msg.text);
-    await store.saveTurns(sessionId, result.turns);
-    log("info", "msg.out", { sessionId, reply: result.reply, confirm: result.confirm?.slip });
+  const state = flow.get(sessionId);
 
-    if (result.confirm) {
-      const ref = stashConfirm(result.confirm.token, sessionId);
+  const startsTransferFlow = /^(send money|send|transfer money|transfer|pay money|pay)$/i.test(lower);
+  if (startsTransferFlow && !state?.kind) {
+    flow.set(sessionId, { kind: "await_bank_transfer", draft: { currency: "NGN" } });
+    await channel.send({ chatId: msg.chatId, text: "How much you wan send? Tell me the amount, for example 5k or 5000." });
+    return;
+  }
+
+  if (state?.kind === "set_pin") {
+    await channel.deleteMessage?.(msg.chatId, msg.messageId);
+    if (lower === "cancel") {
+      flow.delete(sessionId);
+      await channel.send({ chatId: msg.chatId, text: "No wahala. Send me a 4-digit PIN anytime to set your PIN." });
+      return;
+    }
+
+    const step = resolvePinSetup(text, state.pendingPin);
+    if (!step.done) {
+      flow.set(sessionId, { kind: "set_pin", pendingPin: step.pendingPin });
+      await channel.send({ chatId: msg.chatId, text: step.prompt });
+      return;
+    }
+
+    await store.setPinHash(sessionId, hashPin(text));
+    flow.delete(sessionId);
+    await ev(sessionId, { kind: "pin_set" });
+    await channel.send({
+      chatId: msg.chatId,
+      text: "PIN set. ✅ Now, wetin you wan do? You fit check balance, make card, or send money.",
+      buttons: QUICK_BUTTONS,
+    });
+    return;
+  }
+
+  if (state?.kind === "pin_for") {
+    await channel.deleteMessage?.(msg.chatId, msg.messageId);
+    if (lower === "cancel") {
+      flow.delete(sessionId);
+      pending.delete(state.ref);
+      await channel.send({ chatId: msg.chatId, text: "Okay, I no send am." });
+      return;
+    }
+    if (!isValidPinFormat(text)) {
+      await channel.send({ chatId: msg.chatId, text: "Enter your 4-digit PIN to approve, or type cancel." });
+      return;
+    }
+    const pinHash = await store.getPinHash(sessionId);
+    if (!pinHash || !verifyPin(text, pinHash)) {
+      const tries = state.tries + 1;
+      await ev(sessionId, { kind: "pin_failed", flagged: true, detail: { tries } });
+      if (tries >= 3) {
+        flow.delete(sessionId);
+        pending.delete(state.ref);
+        await ev(sessionId, { kind: "pin_blocked", flagged: true });
+        await channel.send({ chatId: msg.chatId, text: "Too many wrong PIN. I don cancel am for your safety." });
+        return;
+      }
+      flow.set(sessionId, { ...state, tries });
+      await channel.send({ chatId: msg.chatId, text: "Wrong PIN. Try again, or type cancel." });
+      return;
+    }
+    flow.delete(sessionId);
+    await executeConfirmed(channel, sessionId, state.ref, msg.chatId);
+    return;
+  }
+
+  if (state?.kind === "await_bank_transfer") {
+    if (lower === "cancel" || /^(stop|cancel am|forget it|leave am|leave it|never ?mind|abeg stop)$/i.test(lower)) {
+      flow.delete(sessionId);
+      await channel.send({ chatId: msg.chatId, text: "Okay, I no go send am. Wetin else you wan do?", buttons: QUICK_BUTTONS });
+      return;
+    }
+
+    const draft = preserveTransferDraft(state.draft, mergeTransferDraft(state.draft, text));
+    const advanced =
+      draft.amountMinor !== state.draft.amountMinor ||
+      draft.accountNumber !== state.draft.accountNumber ||
+      draft.bank !== state.draft.bank;
+    const looksLikeDetail =
+      /\d/.test(text) ||
+      /bank|micro\s?finance|mfb|access|gt\s?b|guaranty|uba|zenith|first|kuda|opay|palm\s?pay|monie|wema|fidelity|union|fcmb|sterling|stanbic|polaris|keystone|ecobank|jaiz|providus|globus/i.test(lower);
+
+    // Escape hatch: nothing new AND doesn't look like a transfer detail → the
+    // user changed topic. Drop the flow and let the normal path handle it.
+    if (!advanced && !looksLikeDetail) {
+      flow.delete(sessionId);
+    } else {
+      if (!draft.amountMinor) {
+        flow.set(sessionId, { kind: "await_bank_transfer", draft });
+        await channel.send({ chatId: msg.chatId, text: "How much you wan send? For example 5k or 5000. (Type cancel to stop.)" });
+        return;
+      }
+      if (!draft.accountNumber) {
+        flow.set(sessionId, { kind: "await_bank_transfer", draft });
+        await channel.send({ chatId: msg.chatId, text: "Send the 10-digit account number." });
+        return;
+      }
+      if (!draft.bank) {
+        flow.set(sessionId, { kind: "await_bank_transfer", draft });
+        await channel.send({ chatId: msg.chatId, text: "Which bank? e.g. Access Bank, GTBank, Opay, or Moniepoint MFB." });
+        return;
+      }
+
+      // Have amount + account + bank → verify the account holder name via BMONI.
+      const provider = getLiveMoneyProvider() ?? getMoneyProvider();
+      const verification = await provider.verifyBankAccount(
+        { sessionId },
+        { accountNumber: draft.accountNumber, bankName: draft.bank },
+      );
+      if (!verification.ok) {
+        flow.set(sessionId, { kind: "await_bank_transfer", draft: { ...draft, bank: undefined } });
+        await channel.send({ chatId: msg.chatId, text: `I couldn't check that account with "${draft.bank}". Send the bank name again, or type cancel.` });
+        return;
+      }
+
+      const recipientName = verification.data.accountHolderName;
+      const amount = money(draft.amountMinor, draft.currency);
+      const beneficiaryId = `bank:${draft.bank}:${draft.accountNumber}:${recipientName}`;
+      const { token } = createConfirmation({ sessionId, action: "transfer", amountMinor: amount.minor, currency: amount.currency, beneficiaryId, to: undefined });
+      flow.delete(sessionId);
+      const ref = stashConfirm(token, sessionId);
+      flow.set(sessionId, { kind: "pin_for", ref, tries: 0 });
+      await ev(sessionId, { kind: "transfer_prepared", amountMinor: amount.minor, currency: amount.currency, flagged: amount.minor >= LARGE_TRANSFER_MINOR, detail: { to: recipientName } });
+      const slip = `Send <b>${formatMoney(amount)}</b> to <b>${recipientName}</b>\n${draft.bank} • ${draft.accountNumber}`;
       await channel.send({
         chatId: msg.chatId,
-        text: result.reply || `${result.confirm.slip}?`,
-        buttons: [
-          [
-            { label: `✔ Confirm — ${result.confirm.slip}`, data: `cfm:${ref}`, kind: "confirm" },
-            { label: "Cancel", data: `cxl:${ref}`, kind: "cancel" },
-          ],
-        ],
+        text: `${slip}\n\n🔒 Enter your 4-digit PIN to approve, or type cancel.`,
+        buttons: [[{ label: "Cancel", data: `cxl:${ref}`, kind: "cancel" }]],
       });
       return;
     }
-    await channel.send({ chatId: msg.chatId, text: result.reply, buttons: renderUi(result.ui) });
+  }
+
+  const pinHash = await store.getPinHash(sessionId);
+  if (!pinHash) {
+    await ev(sessionId, { kind: "onboarding_start" });
+    await channel.send({ chatId: msg.chatId, text: "Welcome to Kudi 👋 I dey open your account for you… hold on small." });
+    try {
+      const acct = await provisionAccount(sessionId);
+      await ev(sessionId, { kind: "account_created", detail: { kyc: acct.kycActive } });
+      const kyc = acct.kycActive ? "verified — KYC done ✅" : "created (KYC pending)";
+      await channel.send({
+        chatId: msg.chatId,
+        text:
+          `✅ Your Kudi wallet is ${kyc}.\n` +
+          `Wallet: <code>${acct.walletAddress.slice(0, 8)}…${acct.walletAddress.slice(-4)}</code>\n` +
+          (acct.phoneNumber ? `Account phone (give this to fund your wallet): <code>${acct.phoneNumber}</code>\n` : "") +
+          `\nNow set a 4-digit transfer PIN — send me any 4 digits (e.g. 1234).`,
+        buttons: QUICK_BUTTONS,
+      });
+    } catch (e) {
+      log("error", "onboarding.provision_failed", { sessionId, detail: String(e) });
+      await channel.send({
+        chatId: msg.chatId,
+        text: "Welcome to Kudi 👋 Let's start — set a 4-digit transfer PIN. Send me any 4 digits (e.g. 1234).",
+        buttons: QUICK_BUTTONS,
+      });
+    }
+    flow.set(sessionId, { kind: "set_pin" });
+    return;
+  }
+
+  const parsed = parseTransferDraft(text);
+  const transferIntent = /\b(send|transfer|pay)\b/i.test(text);
+  const hasAccountDetails = Boolean(parsed.accountNumber && parsed.bank);
+  const isBankTransferRequest = transferIntent && (hasAccountDetails || /account|bank|number/i.test(text) || parsed.amountMinor !== undefined);
+
+  if (isBankTransferRequest) {
+    flow.set(sessionId, { kind: "await_bank_transfer", draft: { amountMinor: parsed.amountMinor, currency: "NGN", accountNumber: parsed.accountNumber, bank: parsed.bank?.displayName, recipientName: parsed.recipientName } });
+    if (!parsed.amountMinor) {
+      await channel.send({ chatId: msg.chatId, text: "How much you wan send? Tell me the amount, for example 5k or 5000." });
+      return;
+    }
+    if (!parsed.accountNumber) {
+      await channel.send({ chatId: msg.chatId, text: "I need the account number first. Send the account number and the bank name, for example: 0123456789 — UBA." });
+      return;
+    }
+    if (!parsed.bank) {
+      await channel.send({ chatId: msg.chatId, text: "I need the bank name too. Send the bank name, for example UBA, First Bank, or Accion Microfinance Bank." });
+      return;
+    }
+    if (!parsed.recipientName) {
+      await channel.send({ chatId: msg.chatId, text: "What name should I save for this receiver?" });
+      return;
+    }
+    const amount = money(parsed.amountMinor, "NGN");
+    const beneficiaryId = `bank:${parsed.bank.displayName}:${parsed.accountNumber}:${parsed.recipientName}`;
+    const { token } = createConfirmation({
+      sessionId,
+      action: "transfer",
+      amountMinor: amount.minor,
+      currency: amount.currency,
+      beneficiaryId,
+      to: undefined,
+    });
+    const ref = stashConfirm(token, sessionId);
+    flow.set(sessionId, { kind: "pin_for", ref, tries: 0 });
+    const slip = `Send ${formatMoney(amount)} to ${parsed.recipientName} (${parsed.bank.displayName} • ${parsed.accountNumber})`;
+    await channel.send({
+      chatId: msg.chatId,
+      text: `${slip}\n\n🔒 Enter your 4-digit PIN to approve, or type cancel.`,
+      buttons: [[{ label: "Cancel", data: `cxl:${ref}`, kind: "cancel" }]],
+    });
+    return;
+  }
+
+  try {
+    if (INJECTION.test(text)) await ev(sessionId, { kind: "injection_attempt", flagged: true, detail: { text } });
+    log("info", "msg.in", { sessionId, voice: msg.fromVoice, text });
+
+    const localReply = await tryHandleLocalIntent(channel, sessionId, msg.chatId, text);
+    if (localReply) {
+      await ev(sessionId, { kind: "message", detail: { voice: msg.fromVoice } });
+      return;
+    }
+
+    const priorTurns = await store.loadTurns(sessionId);
+    const result = await runAgent(sessionId, priorTurns, text);
+    await store.saveTurns(sessionId, result.turns);
+    log("info", "msg.out", { sessionId, reply: result.reply, confirm: result.confirm?.slip });
+    await ev(sessionId, { kind: "message", detail: { voice: msg.fromVoice } });
+
+    if (result.confirm) {
+      const ref = stashConfirm(result.confirm.token, sessionId);
+      flow.set(sessionId, { kind: "pin_for", ref, tries: 0 });
+      const flagged = result.confirm.amountMinor >= LARGE_TRANSFER_MINOR;
+      await ev(sessionId, {
+        kind: `${result.confirm.action}_prepared`,
+        amountMinor: result.confirm.amountMinor,
+        currency: result.confirm.currency,
+        flagged,
+        detail: { slip: result.confirm.slip },
+      });
+      await channel.send({
+        chatId: msg.chatId,
+        text: `${result.reply || result.confirm.slip}\n\n🔒 Enter your 4-digit PIN to approve, or type cancel.`,
+        buttons: [[{ label: "Cancel", data: `cxl:${ref}`, kind: "cancel" }]],
+      });
+      return;
+    }
+    await channel.send({ chatId: msg.chatId, text: result.reply });
   } catch (e) {
     log("error", "dispatch.message_failed", { sessionId, detail: String(e) });
-    await channel.send({ chatId: msg.chatId, text: "Something spoil small for my side. Try am again." });
+    await channel.send({ chatId: msg.chatId, text: fallbackReply(text) });
   }
 }
 
@@ -82,30 +332,73 @@ export async function handleCallback(
 ): Promise<void> {
   const sessionId = sessionFor(cb.chatId);
   const [kind, ref] = cb.data.split(":");
-  log("info", "callback", { sessionId, kind });
   await channel.answerCallback?.(cb.callbackId);
-
-  if (kind === "cxl") {
-    if (ref) pending.delete(ref);
+  if (kind === "cxl" && ref) {
+    flow.delete(sessionId);
+    pending.delete(ref);
     await channel.send({ chatId: cb.chatId, text: "Okay, I no go do am." });
     return;
   }
-  if (kind !== "cfm" || !ref) return;
+  if (kind === "quick" && ref) {
+    const actions: Record<string, string> = {
+      balance: "check balance",
+      card: "create a card",
+      send: "send money",
+      save: "save money",
+    };
+    const action = actions[ref];
+    if (action) {
+      await handleMessage(channel, {
+        chatId: cb.chatId,
+        userId: cb.chatId,
+        text: action,
+        fromVoice: false,
+        messageId: cb.callbackId,
+      });
+    }
+  }
+}
 
+function mergeTransferDraft(current: TransferDraft, text: string): TransferDraft {
+  const parsed = parseTransferDraft(text);
+  return {
+    amountMinor: current.amountMinor ?? parsed.amountMinor,
+    currency: current.currency,
+    accountNumber: current.accountNumber ?? parsed.accountNumber,
+    bank: current.bank ?? parsed.bank?.displayName,
+    recipientName: current.recipientName ?? parsed.recipientName,
+  };
+}
+
+function preserveTransferDraft(current: TransferDraft, next: TransferDraft): TransferDraft {
+  return {
+    amountMinor: next.amountMinor ?? current.amountMinor,
+    currency: next.currency ?? current.currency,
+    accountNumber: next.accountNumber ?? current.accountNumber,
+    bank: next.bank ?? current.bank,
+    recipientName: next.recipientName ?? current.recipientName,
+  };
+}
+
+/** Execute a value-moving action after the user's PIN was verified. */
+async function executeConfirmed(
+  channel: Channel,
+  sessionId: string,
+  ref: string,
+  chatId: string,
+): Promise<void> {
   const entry = pending.get(ref);
   if (!entry || entry.expiresAt < Date.now()) {
-    await channel.send({ chatId: cb.chatId, text: "That confirmation don expire. Ask me again." });
+    await channel.send({ chatId, text: "That confirmation don expire. Ask me again." });
     return;
   }
-  pending.delete(ref); // one shot
+  pending.delete(ref);
 
   const payload = peekConfirmation(entry.token);
   if (!payload) {
-    await channel.send({ chatId: cb.chatId, text: "I no fit read that confirmation. Try am again." });
+    await channel.send({ chatId, text: "I no fit read that confirmation. Try am again." });
     return;
   }
-
-  // Re-verify the signed token against its own payload (signature + expiry).
   const verify = verifyConfirmation(entry.token, {
     sessionId,
     action: payload.action,
@@ -115,22 +408,19 @@ export async function handleCallback(
     to: payload.to,
   });
   if (!verify.ok) {
-    log("warn", "confirm.rejected", { sessionId, reason: verify.reason });
-    const text = verify.reason === "expired" ? "That confirmation don expire. Ask me again." : "I couldn't verify that. Nothing moved.";
-    await channel.send({ chatId: cb.chatId, text });
+    await ev(sessionId, { kind: "confirm_rejected", flagged: true, detail: { reason: verify.reason } });
+    await channel.send({
+      chatId,
+      text: verify.reason === "expired" ? "That confirmation don expire. Ask me again." : "I couldn't verify that. Nothing moved.",
+    });
     return;
   }
-
-  // Single-use: consume the nonce. A replay returns false.
-  const fresh = await getStore().consumeNonce(sessionId, payload.nonce);
-  if (!fresh) {
-    await channel.send({ chatId: cb.chatId, text: "We don already do that one." });
+  if (!(await getStore().consumeNonce(sessionId, payload.nonce))) {
+    await channel.send({ chatId, text: "We don already do that one." });
     return;
   }
-
-  const writeGate = checkRateLimit(sessionId, "write");
-  if (!writeGate.allowed) {
-    await channel.send({ chatId: cb.chatId, text: "Too many money moves right now. Wait small." });
+  if (!checkRateLimit(sessionId, "write").allowed) {
+    await channel.send({ chatId, text: "Too many money moves right now. Wait small." });
     return;
   }
 
@@ -138,48 +428,130 @@ export async function handleCallback(
   const amount = money(payload.amountMinor, payload.currency);
   try {
     if (payload.action === "transfer" && payload.beneficiaryId) {
-      const res = await provider.transfer(
-        { sessionId },
-        { amount, beneficiaryId: payload.beneficiaryId, idempotencyKey: payload.nonce },
-      );
+      const res = await provider.transfer({ sessionId }, { amount, beneficiaryId: payload.beneficiaryId, idempotencyKey: payload.nonce });
       if (!res.ok) {
-        await channel.send({ chatId: cb.chatId, text: res.error.userMessage });
+        await ev(sessionId, { kind: "transfer_failed", amountMinor: amount.minor, currency: amount.currency, detail: { code: res.error.code } });
+        await channel.send({ chatId, text: res.error.userMessage });
         return;
       }
+      await ev(sessionId, { kind: "transfer", amountMinor: amount.minor, currency: amount.currency, detail: { to: res.data.beneficiaryName, ref: res.data.id } });
       await recordOutcome(sessionId, `Sent ${formatMoney(res.data.amount)} to ${res.data.beneficiaryName}. Balance now ${formatMoney(res.data.balanceAfter)}.`);
-      await channel.send({
-        chatId: cb.chatId,
-        text: `Done. I don send ${formatMoney(res.data.amount)} give ${res.data.beneficiaryName}.\nBalance now: ${formatMoney(res.data.balanceAfter)}`,
-      });
+      await channel.send({ chatId, text: transferReceipt(res.data) });
     } else if (payload.action === "convert" && payload.to) {
-      const res = await provider.convert(
-        { sessionId },
-        { amount, to: payload.to, idempotencyKey: payload.nonce },
-      );
+      const res = await provider.convert({ sessionId }, { amount, to: payload.to, idempotencyKey: payload.nonce });
       if (!res.ok) {
-        await channel.send({ chatId: cb.chatId, text: res.error.userMessage });
+        await ev(sessionId, { kind: "convert_failed", amountMinor: amount.minor, currency: amount.currency, detail: { code: res.error.code } });
+        await channel.send({ chatId, text: res.error.userMessage });
         return;
       }
+      await ev(sessionId, { kind: "convert", amountMinor: amount.minor, currency: amount.currency });
       await recordOutcome(sessionId, `Converted ${formatMoney(res.data.from)} to ${formatMoney(res.data.to)}.`);
-      await channel.send({
-        chatId: cb.chatId,
-        text: `Done. ${formatMoney(res.data.from)} don become ${formatMoney(res.data.to)} (${res.data.rateDisplay}).`,
-      });
+      await channel.send({ chatId, text: conversionReceipt(res.data) });
     }
   } catch (e) {
     log("error", "confirm.execute_failed", { sessionId, detail: String(e) });
-    await channel.send({ chatId: cb.chatId, text: "The money service no respond. Nothing moved — try again." });
+    await channel.send({ chatId, text: "The money service no respond. Nothing moved — try again." });
   }
 }
 
-/** Append a truthful outcome note to history so the agent's context stays honest. */
+function refOf(id: string): string {
+  return `KUDI-${id.replace(/[^a-zA-Z0-9]/g, "").slice(-10).toUpperCase()}`;
+}
+function whenOf(iso: string): string {
+  try {
+    return new Date(iso).toLocaleString("en-NG", { dateStyle: "medium", timeStyle: "short" });
+  } catch {
+    return iso;
+  }
+}
+function transferReceipt(r: { id: string; amount: Money; beneficiaryName: string; balanceAfter: Money; createdAt: string }): string {
+  return [
+    "✅ <b>Transfer Successful</b>",
+    "",
+    `<b>${formatMoney(r.amount)}</b> sent to <b>${r.beneficiaryName}</b>`,
+    `Ref: <code>${refOf(r.id)}</code>`,
+    `Date: ${whenOf(r.createdAt)}`,
+    "Status: Completed",
+    `New balance: ${formatMoney(r.balanceAfter)}`,
+    "",
+    "<i>Proof of payment · Kudi (sandbox)</i>",
+  ].join("\n");
+}
+function conversionReceipt(r: { id: string; from: Money; to: Money; rateDisplay: string; createdAt: string }): string {
+  return [
+    "✅ <b>Conversion Successful</b>",
+    "",
+    `<b>${formatMoney(r.from)}</b> → <b>${formatMoney(r.to)}</b>`,
+    `Rate: ${r.rateDisplay}`,
+    `Ref: <code>${refOf(r.id)}</code>`,
+    `Date: ${whenOf(r.createdAt)}`,
+    "",
+    "<i>Proof of payment · Kudi (sandbox)</i>",
+  ].join("\n");
+}
+
+function fallbackReply(text: string): string {
+  const lower = text.toLowerCase();
+  if (/balance|bal/i.test(lower)) return "I fit check your balance. Tell me if you want NGN or USD.";
+  if (/card|virtual/i.test(lower)) return "I fit create a card for you. Tell me the label and currency.";
+  if (/save|savings/i.test(lower)) return "I fit help you save. Tell me the amount.";
+  if (/send|transfer|pay/i.test(lower)) return "I fit help with a transfer. Send the amount and the account details first.";
+  return "I dey here. Tell me wetin you wan do — check balance, make card, or send money.";
+}
+
+async function tryHandleLocalIntent(channel: Channel, sessionId: string, chatId: string, text: string): Promise<boolean> {
+  const lower = text.toLowerCase();
+  const provider = getMoneyProvider();
+
+  if (/balance|bal/i.test(lower)) {
+    const res = await provider.getBalances({ sessionId });
+    if (!res.ok) {
+      await channel.send({ chatId, text: res.error.userMessage });
+      return true;
+    }
+    const lines = res.data.map((b) => `${b.currency}: ${formatMoney(b.available)}`).join("\n");
+    await channel.send({ chatId, text: `Your balances:\n${lines}` });
+    return true;
+  }
+
+  if (/card|virtual/i.test(lower)) {
+    const res = await provider.createVirtualCard({ sessionId }, { currency: "NGN", label: "My card" });
+    if (!res.ok) {
+      await channel.send({ chatId, text: res.error.userMessage });
+      return true;
+    }
+    await channel.send({ chatId, text: `Card ready ✅\nLast4: ${res.data.last4}\nBrand: ${res.data.brand}` });
+    return true;
+  }
+
+  if (/save|savings/i.test(lower)) {
+    const amount = parseAmount(text, "NGN");
+    if (!amount) {
+      await channel.send({ chatId, text: "Tell me the amount you wan save, and I go help you with the rest." });
+      return true;
+    }
+    const res = await provider.saveToSavings(
+      { sessionId },
+      { amount, cadence: "once", idempotencyKey: randomUUID() },
+    );
+    if (!res.ok) {
+      await channel.send({ chatId, text: res.error.userMessage });
+      return true;
+    }
+    await channel.send({ chatId, text: `Saved ${formatMoney(res.data.savedNow)} now. ✅` });
+    return true;
+  }
+
+  if (/send|transfer|pay/i.test(lower)) {
+    await channel.send({ chatId, text: "I fit help with transfer. Send the amount first, and then the account number and bank." });
+    return true;
+  }
+
+  return false;
+}
+
 async function recordOutcome(sessionId: string, note: string): Promise<void> {
   const store = getStore();
   const turns = await store.loadTurns(sessionId);
   await store.saveTurns(sessionId, [...turns, { role: "assistant", text: note }]);
-}
-
-/** Rich channels could render chips; on Telegram the reply text carries it. */
-function renderUi(_ui: unknown): undefined {
-  return undefined;
 }

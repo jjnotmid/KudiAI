@@ -74,7 +74,7 @@ class GeminiProvider implements LlmProvider {
         opts.tools.length > 0
           ? [{ functionDeclarations: opts.tools.map((t) => ({ name: t.name, description: t.description, parameters: t.parameters })) }]
           : undefined,
-      generationConfig: { temperature: 0.2, maxOutputTokens: 512 },
+      generationConfig: { temperature: 0.55, maxOutputTokens: 512 },
     };
     const res = await fetch(url, {
       method: "POST",
@@ -121,7 +121,7 @@ class GroqProvider implements LlmProvider {
     for (const turn of opts.turns) messages.push(...toOpenAiMessages(turn));
     const body = {
       model: this.model,
-      temperature: 0.2,
+      temperature: 0.55,
       max_tokens: 512,
       messages,
       tools:

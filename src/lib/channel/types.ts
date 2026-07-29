@@ -44,4 +44,6 @@ export interface Channel {
   send(msg: OutgoingMessage): Promise<void>;
   /** Acknowledge a button tap so the client stops its spinner. */
   answerCallback?(callbackId: string, text?: string): Promise<void>;
+  /** Remove a message (used to hide a PIN the user typed). Best-effort. */
+  deleteMessage?(chatId: string, messageId: string): Promise<void>;
 }

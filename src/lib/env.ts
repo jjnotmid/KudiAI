@@ -37,6 +37,8 @@ const schema = z.object({
   RESEND_API_KEY: z.string().default(""),
   RESEND_FROM: z.string().default("onboarding@resend.dev"),
 
+  ADMIN_PASSWORD: z.string().default("kudi-admin"),
+
   SESSION_SECRET: z.string().default(""),
 });
 

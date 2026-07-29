@@ -1,0 +1,58 @@
+@import "tailwindcss";
+
+/* Kudi brand tokens — sampled from the logo. Green + gold are co-primary. */
+@theme {
+  --color-paper: #fbf8f2;
+  --color-paper-2: #f4efe4;
+  --color-ink: #16150f;
+  --color-ink-soft: #4b4736;
+  --color-naira: #0c4b3a;
+  --color-naira-deep: #093528;
+  --color-brass: #c08a2d;
+  --color-emerald: #0f7a54;
+  --color-alert: #b4362a;
+
+  --font-display: var(--font-bricolage), ui-sans-serif, system-ui, sans-serif;
+  --font-body: var(--font-public), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-plex-mono), ui-monospace, monospace;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  background-color: var(--color-paper);
+  color: var(--color-ink);
+  font-family: var(--font-body);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Tabular figures for money — never reflow when a digit changes. */
+.tnum {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum";
+}
+
+/* The tally-stroke motif from the logo, as a thin gold rule. */
+.tally-rule {
+  display: flex;
+  gap: 6px;
+}
+.tally-rule > span {
+  width: 3px;
+  height: 22px;
+  background: var(--color-brass);
+  display: block;
+}
+.tally-rule > span:nth-child(4) {
+  transform: rotate(-24deg);
+  transform-origin: bottom;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+}

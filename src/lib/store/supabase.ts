@@ -1,6 +1,6 @@
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import type { Turn } from "@/lib/agent/llm";
-import { MAX_TURNS, type Store } from "./types";
+import { type BmoniAccount, type KudiEvent, MAX_TURNS, type Store } from "./types";
 
 /**
  * Supabase-backed Store. Uses the service_role key (server-only). Apply
@@ -15,6 +15,63 @@ export class SupabaseStore implements Store {
     this.db = createClient(url, serviceRoleKey, {
       auth: { persistSession: false, autoRefreshToken: false },
     });
+  }
+
+  async getBmoniAccount(sessionId: string): Promise<BmoniAccount | null> {
+    const { data, error } = await this.db
+      .from("kudi_bmoni_accounts")
+      .select("bmoni_user_id, smart_wallet_id, wallet_address")
+      .eq("session_id", sessionId)
+      .maybeSingle();
+    if (error) throw new Error(`supabase getBmoniAccount: ${error.message}`);
+    if (!data) return null;
+    return {
+      bmoniUserId: data.bmoni_user_id as string,
+      smartWalletId: data.smart_wallet_id as string,
+      walletAddress: data.wallet_address as string,
+    };
+  }
+
+  async saveBmoniAccount(sessionId: string, account: BmoniAccount): Promise<void> {
+    const { error } = await this.db.from("kudi_bmoni_accounts").upsert(
+      {
+        session_id: sessionId,
+        bmoni_user_id: account.bmoniUserId,
+        smart_wallet_id: account.smartWalletId,
+        wallet_address: account.walletAddress,
+      },
+      { onConflict: "session_id" },
+    );
+    if (error) throw new Error(`supabase saveBmoniAccount: ${error.message}`);
+  }
+
+  async getPinHash(sessionId: string): Promise<string | null> {
+    const { data, error } = await this.db
+      .from("kudi_pins")
+      .select("pin_hash")
+      .eq("session_id", sessionId)
+      .maybeSingle();
+    if (error) throw new Error(`supabase getPinHash: ${error.message}`);
+    return (data?.pin_hash as string | undefined) ?? null;
+  }
+
+  async setPinHash(sessionId: string, pinHash: string): Promise<void> {
+    const { error } = await this.db
+      .from("kudi_pins")
+      .upsert({ session_id: sessionId, pin_hash: pinHash }, { onConflict: "session_id" });
+    if (error) throw new Error(`supabase setPinHash: ${error.message}`);
+  }
+
+  async recordEvent(sessionId: string, event: KudiEvent): Promise<void> {
+    const { error } = await this.db.from("kudi_events").insert({
+      session_id: sessionId,
+      kind: event.kind,
+      amount_minor: event.amountMinor ?? null,
+      currency: event.currency ?? null,
+      detail: event.detail ?? {},
+      flagged: event.flagged ?? false,
+    });
+    if (error) throw new Error(`supabase recordEvent: ${error.message}`);
   }
 
   async loadTurns(sessionId: string): Promise<Turn[]> {

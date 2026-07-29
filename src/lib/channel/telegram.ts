@@ -45,6 +45,14 @@ export class TelegramChannel implements Channel {
     await this.call("answerCallbackQuery", { callback_query_id: callbackId, text });
   }
 
+  async deleteMessage(chatId: string, messageId: string): Promise<void> {
+    try {
+      await this.call("deleteMessage", { chat_id: chatId, message_id: Number(messageId) });
+    } catch {
+      /* message may be too old to delete — best effort */
+    }
+  }
+
   // ── Extras used by webhook/polling ─────────────────────────────────
   async setWebhook(url: string, secretToken: string): Promise<void> {
     await this.call("setWebhook", {

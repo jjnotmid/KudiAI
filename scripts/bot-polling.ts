@@ -36,9 +36,10 @@ async function main(): Promise<void> {
             messageId: String(u.message.message_id),
           });
         } else if (u.message?.voice) {
-          const { bytes, mime } = await tg.downloadFile(u.message.voice.file_id);
+          await tg.send({ chatId: String(u.message.chat.id), text: "Hold on, I dey listen…" });
+          const { bytes } = await tg.downloadFile(u.message.voice.file_id);
           const { transcribe } = await import("@/lib/agent/stt");
-          const text = await transcribe(bytes, mime);
+          const text = await transcribe(bytes, u.message.voice.mime_type ?? "audio/ogg");
           if (!text) {
             await tg.send({ chatId: String(u.message.chat.id), text: "I no hear am well. Fit you type am?" });
           } else {

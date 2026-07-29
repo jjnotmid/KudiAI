@@ -93,6 +93,17 @@ export interface TransferInput {
   readonly idempotencyKey: string;
 }
 
+export interface VerifyBankAccountInput {
+  readonly accountNumber: string;
+  readonly bankName: string;
+}
+
+export interface VerifiedBankAccount {
+  readonly accountHolderName: string;
+  readonly bankName: string;
+  readonly bankCode?: string;
+}
+
 export interface TransferReceipt {
   readonly id: string;
   readonly amount: Money;
@@ -140,6 +151,7 @@ export interface MoneyProvider {
   getBalances(ctx: Ctx): Promise<Result<Balance[]>>;
   listBeneficiaries(ctx: Ctx): Promise<Result<Beneficiary[]>>;
   createVirtualCard(ctx: Ctx, input: CreateCardInput): Promise<Result<VirtualCard>>;
+  verifyBankAccount(ctx: Ctx, input: VerifyBankAccountInput): Promise<Result<VerifiedBankAccount>>;
   transfer(ctx: Ctx, input: TransferInput): Promise<Result<TransferReceipt>>;
   convert(ctx: Ctx, input: ConvertInput): Promise<Result<ConversionReceipt>>;
   saveToSavings(ctx: Ctx, input: SavingsInput): Promise<Result<SavingsReceipt>>;

@@ -2,7 +2,6 @@ import { randomInt, randomUUID } from "node:crypto";
 import { addMoney, fromMajor, gte, isPositive, type Money, money, subMoney } from "@/lib/money/types";
 import { formatMoney } from "@/lib/money/format";
 import { seedBalances, seedBeneficiaries } from "./seed";
-import { resolveBeneficiary } from "./resolve";
 import { withLuhn } from "./luhn";
 import {
   type Balance,
@@ -20,6 +19,8 @@ import {
   type SavingsReceipt,
   type TransferInput,
   type TransferReceipt,
+  type VerifiedBankAccount,
+  type VerifyBankAccountInput,
   type VirtualCard,
 } from "./types";
 
@@ -135,6 +136,11 @@ export class SimProvider implements MoneyProvider {
     return ok(card);
   }
 
+  async verifyBankAccount(_ctx: Ctx, input: VerifyBankAccountInput): Promise<Result<VerifiedBankAccount>> {
+    const suffix = input.accountNumber.replace(/\D/g, "").slice(-4).padStart(4, "0");
+    return ok({ accountHolderName: `Recipient ${suffix}`, bankName: input.bankName, bankCode: "sim" });
+  }
+
   async transfer(ctx: Ctx, input: TransferInput): Promise<Result<TransferReceipt>> {
     const gated = await this.gate(ctx);
     if (gated) return gated;
@@ -146,10 +152,10 @@ export class SimProvider implements MoneyProvider {
     if (!isPositive(input.amount)) {
       return err("invalid_amount", "That amount doesn’t look right.");
     }
-    const res = resolveBeneficiary(input.beneficiaryId, s.beneficiaries);
-    if (res.kind !== "match") {
-      return err("unknown_beneficiary", "I couldn’t find that person on your list.");
-    }
+    const special = parseBankTransferRecipient(input.beneficiaryId);
+    const namedRecipient = special
+      ? `${special.recipientName} (${special.bankName} • ${special.accountNumber})`
+      : undefined;
     const balance = s.balances.get(input.amount.currency) ?? money(0, input.amount.currency);
     if (!gte(balance, input.amount)) {
       return err(
@@ -163,8 +169,8 @@ export class SimProvider implements MoneyProvider {
     const receipt: TransferReceipt = {
       id: `txn_${s.ledgerSeq}_${randomUUID().slice(0, 8)}`,
       amount: input.amount,
-      beneficiaryId: res.beneficiary.id,
-      beneficiaryName: res.beneficiary.name,
+      beneficiaryId: input.beneficiaryId,
+      beneficiaryName: namedRecipient ?? "Unknown beneficiary",
       balanceAfter: after,
       createdAt: new Date().toISOString(),
     };
@@ -247,6 +253,17 @@ export class SimProvider implements MoneyProvider {
     s.seenIdempotencyKeys.set(input.idempotencyKey, receipt);
     return ok(receipt);
   }
+}
+
+function parseBankTransferRecipient(beneficiaryId: string): { bankName: string; accountNumber: string; recipientName: string } | null {
+  if (!beneficiaryId.startsWith("bank:")) return null;
+  const parts = beneficiaryId.split(":");
+  if (parts.length < 4) return null;
+  return {
+    bankName: decodeURIComponent(parts[1] ?? ""),
+    accountNumber: parts[2] ?? "",
+    recipientName: decodeURIComponent(parts[3] ?? ""),
+  };
 }
 
 function delay(ms: number): Promise<void> {

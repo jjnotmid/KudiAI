@@ -1,4 +1,4 @@
-import { getEnv } from "@/lib/env";
+import { getEnv, type Env } from "@/lib/env";
 import { BmoniLiveProvider } from "./live";
 import { SimProvider } from "./sim";
 import type { MoneyProvider } from "./types";
@@ -10,10 +10,16 @@ let cached: MoneyProvider | null = null;
  * credentials are missing, fall back to `sim` with a warning — the app must
  * never crash on a missing key (§0.4).
  */
+export function shouldUseLiveProvider(env: Pick<Env, "MONEY_PROVIDER" | "BMONI_BASE_URL" | "BMONI_API_KEY"> = getEnv()): boolean {
+  // Honour MONEY_PROVIDER explicitly: `live` only when creds exist, else `sim`.
+  // (Predictable for the demo; flip MONEY_PROVIDER=live to go real.)
+  return env.MONEY_PROVIDER === "live" && Boolean(env.BMONI_BASE_URL && env.BMONI_API_KEY);
+}
+
 export function getMoneyProvider(): MoneyProvider {
   if (cached) return cached;
   const env = getEnv();
-  if (env.MONEY_PROVIDER === "live" && env.BMONI_BASE_URL && env.BMONI_API_KEY) {
+  if (shouldUseLiveProvider(env) && env.BMONI_BASE_URL && env.BMONI_API_KEY) {
     cached = new BmoniLiveProvider(env.BMONI_BASE_URL, env.BMONI_API_KEY);
   } else {
     if (env.MONEY_PROVIDER === "live") {
@@ -22,6 +28,12 @@ export function getMoneyProvider(): MoneyProvider {
     cached = new SimProvider({ latency: true });
   }
   return cached;
+}
+
+export function getLiveMoneyProvider(): MoneyProvider | null {
+  const env = getEnv();
+  if (!env.BMONI_BASE_URL || !env.BMONI_API_KEY) return null;
+  return new BmoniLiveProvider(env.BMONI_BASE_URL, env.BMONI_API_KEY);
 }
 
 export * from "./types";
