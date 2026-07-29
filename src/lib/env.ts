@@ -34,6 +34,9 @@ const schema = z.object({
   CLOUDINARY_API_KEY: z.string().default(""),
   CLOUDINARY_API_SECRET: z.string().default(""),
 
+  RESEND_API_KEY: z.string().default(""),
+  RESEND_FROM: z.string().default("onboarding@resend.dev"),
+
   SESSION_SECRET: z.string().default(""),
 });
 

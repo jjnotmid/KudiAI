@@ -49,9 +49,11 @@ export async function handleMessage(channel: Channel, msg: IncomingMessage): Pro
 
   const store = getStore();
   try {
+    log("info", "msg.in", { sessionId, voice: msg.fromVoice, text: msg.text });
     const priorTurns = await store.loadTurns(sessionId);
     const result = await runAgent(sessionId, priorTurns, msg.text);
     await store.saveTurns(sessionId, result.turns);
+    log("info", "msg.out", { sessionId, reply: result.reply, confirm: result.confirm?.slip });
 
     if (result.confirm) {
       const ref = stashConfirm(result.confirm.token, sessionId);
@@ -80,6 +82,7 @@ export async function handleCallback(
 ): Promise<void> {
   const sessionId = sessionFor(cb.chatId);
   const [kind, ref] = cb.data.split(":");
+  log("info", "callback", { sessionId, kind });
   await channel.answerCallback?.(cb.callbackId);
 
   if (kind === "cxl") {

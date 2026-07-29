@@ -86,6 +86,22 @@ Kudi's "send to my brother" maps to a **bank payout / NGN offramp** to a registe
 | convert_currency | ✅ `…/exchange/convert` (quote → target/rate) |
 | set_savings | ⚠️ no direct savings API; model as a CNGN→USDB convert/hold |
 
-## Still to confirm from interactive docs (embedded-dev.bmoni.com/docs)
-- Rate limits. Exact balances response JSON. Whether sandbox auto-approves KYC/funding.
-- The owner-address keypair strategy (who holds the signing key for a managed wallet).
+## ✅ VERIFIED LIVE (2026-07-29) — wallet provisioning + balance work end-to-end
+Confirmed exact shapes by walking the sandbox (`scripts/bmoni-probe.ts`):
+1. `POST /v1/users` → `{ user: { bmoniUserId, id } }`.
+2. Owner EOA via viem (`generatePrivateKey`/`privateKeyToAccount`) — we hold the key.
+3. `POST …/smart-wallets/owner-proof-challenges` `{ currency:"CNGN", userOwnerAddress }`
+   → `{ challengeId, groupId, message, expiresAt }`. Field is **`message`** (plain string), not `messageToSign`.
+4. Sign via **personal_sign/EIP-191**: `account.signMessage({ message })` → 65-byte 0x hex.
+5. `POST …/smart-wallets/create-managed` `{ currency:"CNGN", userOwnerAddress, ownerProofChallengeId, ownerProofSignature }`
+   → `{ id, currency:"NGN", walletAddress, isActive:true }`. **`id` = smartWalletId; address = `walletAddress`.**
+6. `GET …/smart-wallets/account/balances` (works right after creation, no KYC for READ)
+   → `{ smartAccountAddress, balances:[{ smartWalletId, currency:"NGN", balance:"0", error:null }] }`.
+7. `GET …/bank-accounts/nigerian-banks` → `{ banks:[{ bankName, bankCode }] }` (Access Bank `000014`).
+
+## Still to confirm (blocks a real TRANSFER)
+- **Funding:** new wallet `balance:"0"`. No funding/faucet endpoint found — need the sandbox CNGN ₦1,000
+  test funds mechanism (ask BMONI or find in interactive docs). Can't offramp from 0.
+- Whether `offramp/nigeria` needs KYC-active NGN rail first (`start-nigeria` + BVN `22222222222`).
+- `balance` units (minor vs major) — need a funded wallet to tell.
+- Rate limits.
