@@ -3,7 +3,7 @@
  * URL needed — it pulls updates from Telegram and dispatches them. Use this for
  * development and the demo; use the webhook route for production.
  */
-import { handleCallback, handleMessage } from "@/lib/channel/dispatch";
+import { handleCallback, handleMessage, handlePhoto } from "@/lib/channel/dispatch";
 import { getTelegram } from "@/lib/channel/telegram";
 
 loadEnv();
@@ -50,6 +50,21 @@ async function main(): Promise<void> {
               fromVoice: true,
               messageId: String(u.message.message_id),
             });
+          }
+        } else if (u.message?.photo?.length) {
+          const largest = u.message.photo[u.message.photo.length - 1];
+          if (largest) {
+            const { bytes, mime } = await tg.downloadFile(largest.file_id);
+            await handlePhoto(
+              tg,
+              {
+                chatId: String(u.message.chat.id),
+                userId: String(u.message.from?.id ?? u.message.chat.id),
+                messageId: String(u.message.message_id),
+              },
+              bytes,
+              mime.startsWith("image") ? mime : "image/jpeg",
+            );
           }
         } else if (u.callback_query) {
           await handleCallback(tg, {

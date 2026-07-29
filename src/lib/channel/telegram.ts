@@ -104,6 +104,7 @@ export interface TelegramUpdate {
     chat: { id: number };
     text?: string;
     voice?: { file_id: string; duration: number; mime_type?: string };
+    photo?: { file_id: string; file_size?: number }[];
   };
   callback_query?: {
     id: string;

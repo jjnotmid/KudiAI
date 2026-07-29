@@ -6,7 +6,7 @@ import { log } from "@/lib/log";
 import { BmoniClient } from "./client";
 import { deriveOwnerAccount } from "./owner";
 
-const SANDBOX_BVN = "22222222222";
+export const SANDBOX_BVN = "22222222222";
 
 /** Build a client from env (used when the caller doesn't already have one). */
 function clientFromEnv(): BmoniClient {
@@ -50,27 +50,72 @@ export async function ensureBmoniAccount(sessionId: string, client: BmoniClient)
     signature,
   );
 
-  // KYC — activate the Nigerian rail with the sandbox BVN. Best-effort.
-  let kycActive = false;
-  try {
-    await client.startNigeriaKyc(user.bmoniUserId, {
-      bvn: SANDBOX_BVN,
-      ngnWalletAddress: wallet.walletAddress,
-      ngnWalletIndex: 0,
-    });
-    kycActive = true;
-  } catch (e) {
-    log("warn", "bmoni.kyc_pending", { sessionId, detail: String(e).slice(0, 160) });
-  }
-
   const account: BmoniAccount = {
     bmoniUserId: user.bmoniUserId,
     smartWalletId: wallet.id,
     walletAddress: wallet.walletAddress,
     phoneNumber,
-    kycActive,
+    kycActive: false, // KYC is an interactive step (see activateKyc)
   };
   await store.saveBmoniAccount(sessionId, account);
-  log("info", "bmoni.onboarded", { sessionId, walletAddress: account.walletAddress, kycActive });
+  log("info", "bmoni.onboarded", { sessionId, walletAddress: account.walletAddress });
   return account;
+}
+
+// ── Interactive KYC (real BMONI: profile → documents → activate) ─────────
+async function acct(sessionId: string): Promise<BmoniAccount> {
+  const a = await getStore().getBmoniAccount(sessionId);
+  if (!a) throw new Error("no BMONI account for session");
+  return a;
+}
+
+/** Submit the KYC profile from the details the user gave, with sensible defaults. */
+export async function submitKycProfile(
+  sessionId: string,
+  input: { fullName: string; dob: string; bvn: string },
+  client: BmoniClient = clientFromEnv(),
+): Promise<void> {
+  const account = await acct(sessionId);
+  const parts = input.fullName.trim().split(/\s+/);
+  const firstName = parts[0] || "Kudi";
+  const lastName = parts.slice(1).join(" ") || firstName;
+  await client.submitKycProfile(account.bmoniUserId, {
+    personalInfo: { firstName, lastName, dateOfBirth: input.dob, nationality: "NGA" },
+    address: { streetLine1: "1 Kudi Street", city: "Lagos", state: "Lagos", postalCode: "100001", countryCode: "NGA" },
+    employment: { employmentStatus: "employed", occupationCode: "119199" },
+    sourceOfFunds: "business",
+    identificationNumbers: [{ type: "bvn", number: input.bvn, issuingCountryCode: "NGA" }],
+  });
+}
+
+/** The facial step — upload the user's selfie as the biometric document.
+ * Confirmed multipart shape: field name "selfie", type "selfie". */
+export async function uploadKycSelfie(sessionId: string, bytes: Uint8Array, mime: string, client: BmoniClient = clientFromEnv()): Promise<void> {
+  const account = await acct(sessionId);
+  await client.uploadKycDocument(
+    account.bmoniUserId,
+    "biometric",
+    "selfie",
+    { bytes, filename: "selfie.jpg", mime: mime || "image/jpeg" },
+    { type: "selfie" },
+  );
+}
+
+/** Finalise KYC: activate the profile. Returns whether it activated. */
+export async function finalizeKyc(sessionId: string, client: BmoniClient = clientFromEnv()): Promise<{ activated: boolean; missing?: string[] }> {
+  const account = await acct(sessionId);
+  let missing: string[] | undefined;
+  try {
+    const rd = await client.kycReadiness(account.bmoniUserId);
+    if (!rd.ready) missing = rd.missing;
+  } catch { /* ignore */ }
+  let activated = false;
+  try {
+    const r = (await client.kycActivate(account.bmoniUserId, "id-and-liveness")) as { activated?: boolean; status?: string };
+    activated = Boolean(r?.activated) || r?.status === "active" || r?.status === "pending";
+  } catch (e) {
+    log("warn", "bmoni.kyc_activate_failed", { sessionId, detail: String(e).slice(0, 160) });
+  }
+  await getStore().saveBmoniAccount(sessionId, { ...account, kycActive: activated });
+  return { activated, missing };
 }

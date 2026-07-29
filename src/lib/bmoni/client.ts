@@ -123,7 +123,52 @@ export class BmoniClient {
     });
   }
 
-  /** Activate the Nigerian rail (KYC) with the sandbox BVN. Best-effort. */
+  /** Look up BVN holder details (used to confirm identity during KYC). */
+  async bvnLookup(userId: string, bvn: string): Promise<Record<string, unknown>> {
+    return this.req("GET", `/v1/users/${userId}/kyc/bvn-lookup/${bvn}`);
+  }
+
+  /** Submit the KYC profile (personalInfo/address/employment/identificationNumbers). */
+  async submitKycProfile(userId: string, profile: unknown): Promise<unknown> {
+    return this.req("PATCH", `/v1/users/${userId}/kyc`, profile);
+  }
+
+  async kycReadiness(userId: string): Promise<{ ready: boolean; missing: string[] }> {
+    return this.req("GET", `/v1/users/${userId}/kyc/readiness`);
+  }
+
+  async kycActivate(userId: string, sumsubLevelName?: string): Promise<unknown> {
+    return this.req("POST", `/v1/users/${userId}/kyc/activate`, sumsubLevelName ? { sumsubLevelName } : {});
+  }
+
+  /** Upload a KYC document (multipart). `fileField` is the multipart field name
+   * BMONI expects for that endpoint (e.g. biometric → "selfie"). */
+  async uploadKycDocument(
+    userId: string,
+    kind: "identification" | "proof-of-address" | "biometric",
+    fileField: string,
+    file: { bytes: Uint8Array; filename: string; mime: string },
+    fields: Record<string, string> = {},
+  ): Promise<unknown> {
+    const form = new FormData();
+    form.append(fileField, new Blob([file.bytes as BlobPart], { type: file.mime }), file.filename);
+    for (const [k, v] of Object.entries(fields)) form.append(k, v);
+    const res = await fetch(`${this.baseUrl}/v1/users/${userId}/kyc/documents/${kind}`, {
+      method: "POST",
+      headers: { "x-api-key": this.apiKey },
+      body: form,
+    });
+    let json: unknown = null;
+    try {
+      json = await res.json();
+    } catch {
+      /* */
+    }
+    if (!res.ok) throw new BmoniHttpError(res.status, json);
+    return json;
+  }
+
+  /** Activate the Nigerian rail (KYC) with the BVN. Best-effort. */
   async startNigeriaKyc(
     userId: string,
     input: { bvn: string; ngnWalletAddress: string; ngnWalletIndex: number },

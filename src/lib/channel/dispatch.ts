@@ -4,7 +4,7 @@ import { hashPin, isValidPinFormat, resolvePinSetup, verifyPin } from "@/lib/age
 import { runAgent } from "@/lib/agent/run";
 import { getLiveMoneyProvider, getMoneyProvider } from "@/lib/bmoni";
 import { parseTransferDraft } from "@/lib/bmoni/banks";
-import { provisionAccount } from "@/lib/bmoni/onboard";
+import { finalizeKyc, provisionAccount, SANDBOX_BVN, submitKycProfile, uploadKycSelfie } from "@/lib/bmoni/onboard";
 import { formatMoney } from "@/lib/money/format";
 import { parseAmount } from "@/lib/money/parse";
 import { money, type Money } from "@/lib/money/types";
@@ -43,7 +43,14 @@ type TransferDraft = {
 };
 
 /** Per-session conversational state for the PIN handshake and transfer details. Process-local. */
-type Flow = { kind: "set_pin"; pendingPin?: string } | { kind: "pin_for"; ref: string; tries: number } | { kind: "await_bank_transfer"; draft: TransferDraft };
+type Flow =
+  | { kind: "set_pin"; pendingPin?: string }
+  | { kind: "pin_for"; ref: string; tries: number }
+  | { kind: "await_bank_transfer"; draft: TransferDraft }
+  | { kind: "kyc_name" }
+  | { kind: "kyc_dob"; fullName: string }
+  | { kind: "kyc_bvn"; fullName: string; dob: string }
+  | { kind: "kyc_selfie" };
 const flow = new Map<string, Flow>();
 
 /** Pending confirmations: ref → token (Telegram callback_data is ≤64 bytes). */
@@ -145,6 +152,59 @@ export async function handleMessage(channel: Channel, msg: IncomingMessage): Pro
     return;
   }
 
+  if (state?.kind === "kyc_name") {
+    if (lower === "cancel") {
+      flow.set(sessionId, { kind: "set_pin" });
+      await channel.send({ chatId: msg.chatId, text: "No wahala, we go verify later. For now set your 4-digit PIN — send me 4 digits." });
+      return;
+    }
+    if (text.trim().length < 2) {
+      await channel.send({ chatId: msg.chatId, text: "Tell me your full name, e.g. Ada Okafor." });
+      return;
+    }
+    flow.set(sessionId, { kind: "kyc_dob", fullName: text.trim() });
+    await channel.send({ chatId: msg.chatId, text: "Your date of birth? Format YYYY-MM-DD (e.g. 1995-06-20)." });
+    return;
+  }
+  if (state?.kind === "kyc_dob") {
+    const dob = text.trim();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(dob)) {
+      await channel.send({ chatId: msg.chatId, text: "Send your date of birth like 1995-06-20." });
+      return;
+    }
+    flow.set(sessionId, { kind: "kyc_bvn", fullName: state.fullName, dob });
+    await channel.send({ chatId: msg.chatId, text: `Your 11-digit BVN? (For the sandbox you fit use ${SANDBOX_BVN}.)` });
+    return;
+  }
+  if (state?.kind === "kyc_bvn") {
+    await channel.deleteMessage?.(msg.chatId, msg.messageId);
+    const bvn = text.replace(/\D/g, "");
+    if (bvn.length !== 11) {
+      await channel.send({ chatId: msg.chatId, text: `BVN na 11 digits. Sandbox: ${SANDBOX_BVN}.` });
+      return;
+    }
+    await channel.send({ chatId: msg.chatId, text: "Checking your details…" });
+    try {
+      await submitKycProfile(sessionId, { fullName: state.fullName, dob: state.dob, bvn });
+      await ev(sessionId, { kind: "kyc_profile_submitted" });
+      flow.set(sessionId, { kind: "kyc_selfie" });
+      await channel.send({ chatId: msg.chatId, text: "Good. Now send a selfie 🤳 — a clear photo of your face for verification." });
+    } catch (e) {
+      log("error", "kyc.profile_failed", { sessionId, detail: String(e) });
+      await channel.send({ chatId: msg.chatId, text: "That one no work. Check your BVN and send am again, or type cancel." });
+    }
+    return;
+  }
+  if (state?.kind === "kyc_selfie") {
+    if (lower === "cancel") {
+      flow.set(sessionId, { kind: "set_pin" });
+      await channel.send({ chatId: msg.chatId, text: "Okay, set your PIN — send me 4 digits." });
+      return;
+    }
+    await channel.send({ chatId: msg.chatId, text: "Send a selfie photo 🤳 (tap the camera) to finish verification, or type cancel." });
+    return;
+  }
+
   if (state?.kind === "await_bank_transfer") {
     if (lower === "cancel" || /^(stop|cancel am|forget it|leave am|leave it|never ?mind|abeg stop)$/i.test(lower)) {
       flow.delete(sessionId);
@@ -218,17 +278,17 @@ export async function handleMessage(channel: Channel, msg: IncomingMessage): Pro
     await channel.send({ chatId: msg.chatId, text: "Welcome to Kudi 👋 I dey open your account for you… hold on small." });
     try {
       const acct = await provisionAccount(sessionId);
-      await ev(sessionId, { kind: "account_created", detail: { kyc: acct.kycActive } });
-      const kyc = acct.kycActive ? "verified — KYC done ✅" : "created (KYC pending)";
+      await ev(sessionId, { kind: "account_created" });
       await channel.send({
         chatId: msg.chatId,
         text:
-          `✅ Your Kudi wallet is ${kyc}.\n` +
+          "✅ Your Kudi wallet is created.\n" +
           `Wallet: <code>${acct.walletAddress.slice(0, 8)}…${acct.walletAddress.slice(-4)}</code>\n` +
-          (acct.phoneNumber ? `Account phone (give this to fund your wallet): <code>${acct.phoneNumber}</code>\n` : "") +
-          `\nNow set a 4-digit transfer PIN — send me any 4 digits (e.g. 1234).`,
+          (acct.phoneNumber ? `Account phone (give this to BMONI to fund your wallet): <code>${acct.phoneNumber}</code>\n` : "") +
+          "\nNow let's verify you (KYC). Wetin be your full name?",
         buttons: QUICK_BUTTONS,
       });
+      flow.set(sessionId, { kind: "kyc_name" });
     } catch (e) {
       log("error", "onboarding.provision_failed", { sessionId, detail: String(e) });
       await channel.send({
@@ -236,8 +296,8 @@ export async function handleMessage(channel: Channel, msg: IncomingMessage): Pro
         text: "Welcome to Kudi 👋 Let's start — set a 4-digit transfer PIN. Send me any 4 digits (e.g. 1234).",
         buttons: QUICK_BUTTONS,
       });
+      flow.set(sessionId, { kind: "set_pin" });
     }
-    flow.set(sessionId, { kind: "set_pin" });
     return;
   }
 
@@ -357,6 +417,41 @@ export async function handleCallback(
       });
     }
   }
+}
+
+/** Handle an incoming photo — used for the KYC selfie + ID document steps. */
+export async function handlePhoto(
+  channel: Channel,
+  msg: { chatId: string; userId: string; messageId: string },
+  bytes: Uint8Array,
+  mime: string,
+): Promise<void> {
+  const sessionId = sessionFor(msg.chatId);
+  const state = flow.get(sessionId);
+
+  if (state?.kind === "kyc_selfie") {
+    await channel.send({ chatId: msg.chatId, text: "Got your selfie — verifying your face with BMONI… 🔍" });
+    let uploaded = false;
+    try {
+      await uploadKycSelfie(sessionId, bytes, mime);
+      uploaded = true;
+      await ev(sessionId, { kind: "kyc_selfie_uploaded" });
+    } catch (e) {
+      log("error", "kyc.selfie_failed", { sessionId, detail: String(e) });
+    }
+    const { activated } = await finalizeKyc(sessionId);
+    await ev(sessionId, { kind: "kyc_completed", detail: { activated, uploaded } });
+    flow.set(sessionId, { kind: "set_pin" });
+    const line = activated
+      ? "✅ Face verified — KYC approved!"
+      : uploaded
+        ? "✅ Face received — KYC submitted (review pending)."
+        : "Hmm, that photo no clear. But we go continue for now.";
+    await channel.send({ chatId: msg.chatId, text: `${line}\n\nLast step — set your 4-digit transfer PIN. Send me any 4 digits.` });
+    return;
+  }
+
+  await channel.send({ chatId: msg.chatId, text: "Nice photo! But I no need am now. Wetin you wan do?", buttons: QUICK_BUTTONS });
 }
 
 function mergeTransferDraft(current: TransferDraft, text: string): TransferDraft {
