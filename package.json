@@ -15,6 +15,7 @@
     "bot:dev": "tsx scripts/bot-polling.ts",
     "webhook:set": "tsx scripts/set-webhook.ts",
     "demo:reset": "tsx scripts/demo-reset.ts",
+    "db:clear": "tsx scripts/clear-db.ts",
     "verify": "./scripts/verify.sh"
   },
   "dependencies": {
