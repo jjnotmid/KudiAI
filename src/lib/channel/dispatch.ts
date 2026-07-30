@@ -114,7 +114,13 @@ export async function handleMessage(channel: Channel, msg: IncomingMessage): Pro
     } else if (!acc0) {
       await ev(sessionId, { kind: "onboarding_start" });
       await getStore().setFlow(sessionId, { kind: "su_name" });
-      await channel.send({ chatId: msg.chatId, text: "Welcome to Kudi 👋 I be your money assistant. Let's open your account — first, wetin be your full name?" });
+      await channel.send({
+        chatId: msg.chatId,
+        text:
+          "Welcome to Kudi 👋 I be your money assistant — you fit talk to me in English or Pidgin, by text or voice note.\n\n" +
+          "💡 During setup: type <b>back</b> to change your last answer, or <b>cancel</b> to stop.\n\n" +
+          "Let's open your account. First, wetin be your full name?",
+      });
     } else {
       await getStore().setFlow(sessionId, { kind: "set_pin" });
       await channel.send({ chatId: msg.chatId, text: "Let's finish setting up — send a 4-digit PIN (I go ask you to confirm it)." });
@@ -149,7 +155,15 @@ export async function handleMessage(channel: Channel, msg: IncomingMessage): Pro
     await ev(sessionId, { kind: "pin_set" });
     await channel.send({
       chatId: msg.chatId,
-      text: "PIN set. ✅ Now, wetin you wan do? You fit check balance, make card, or send money.",
+      text:
+        "PIN set ✅ You're all set!\n\n" +
+        "Here's wetin I fit do for you:\n" +
+        "💰 Check your balance\n" +
+        "💳 Create a virtual card\n" +
+        "📤 Send money to any bank\n" +
+        "🐷 Save money\n" +
+        "🪙 Receive crypto (USDC)\n\n" +
+        "Just talk to me — by text or voice note. Tap a button below, or type <b>help</b> anytime.",
       buttons: QUICK_BUTTONS,
     });
     return;
@@ -703,6 +717,23 @@ function fallbackReply(text: string): string {
 async function tryHandleLocalIntent(channel: Channel, sessionId: string, chatId: string, text: string): Promise<boolean> {
   const lower = text.toLowerCase();
   const provider = getMoneyProvider();
+
+  if (/^(help|menu|options)\b|what can you do|wetin you fit do|how (do|does|to) (i|this|it)/i.test(lower)) {
+    await channel.send({
+      chatId,
+      text:
+        "Here's how to use Kudi 👇\n\n" +
+        "💰 <b>Balance</b> — “how much I get?”\n" +
+        "💳 <b>Card</b> — “create a card”\n" +
+        "📤 <b>Send</b> — “send 5k”, then I ask for the account number + bank\n" +
+        "🐷 <b>Save</b> — “save 2k”\n" +
+        "🪙 <b>Receive crypto</b> — “my wallet address”\n" +
+        "🔒 Every transfer needs your PIN.\n\n" +
+        "You fit talk by text or voice note. Type <b>delete account</b> to close your account.",
+      buttons: QUICK_BUTTONS,
+    });
+    return true;
+  }
 
   if (
     /\bbalance\b|\bbal\b|how much (i|we|dey|money|remain)|how much i get|wetin dey (my |the )?account|wetin i get|wetin dey inside|my money|how far (my )?account|check.*(balance|account)|money wey dey/i.test(
