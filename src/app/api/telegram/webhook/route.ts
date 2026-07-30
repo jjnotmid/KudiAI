@@ -32,6 +32,8 @@ export async function POST(req: Request): Promise<Response> {
   const tg = getTelegram();
   try {
     const m = update.message;
+    const chatId = m?.chat.id ?? update.callback_query?.message?.chat.id;
+    if (chatId != null) void tg.sendTyping?.(String(chatId));
     if (m?.text) {
       await handleMessage(tg, {
         chatId: String(m.chat.id),
@@ -41,11 +43,15 @@ export async function POST(req: Request): Promise<Response> {
         messageId: String(m.message_id),
       });
     } else if (m?.voice) {
-      await tg.send({ chatId: String(m.chat.id), text: "Hold on, I dey listen…" });
-      const { bytes } = await tg.downloadFile(m.voice.file_id);
-      const text = await transcribe(bytes, m.voice.mime_type ?? "audio/ogg");
+      let text: string | null = null;
+      try {
+        const { bytes } = await tg.downloadFile(m.voice.file_id);
+        text = await transcribe(bytes, m.voice.mime_type ?? "audio/ogg");
+      } catch (e) {
+        log("error", "webhook.voice_failed", { detail: String(e) });
+      }
       if (!text) {
-        await tg.send({ chatId: String(m.chat.id), text: "I no hear am well. Fit you type am?" });
+        await tg.send({ chatId: String(m.chat.id), text: "I no hear that voice note well 🎧 Abeg type am for me." });
       } else {
         await handleMessage(tg, {
           chatId: String(m.chat.id),

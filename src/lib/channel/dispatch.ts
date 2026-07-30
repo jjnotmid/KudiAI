@@ -138,6 +138,7 @@ type Flow =
   | { kind: "kyc_selfie" }
   | { kind: "confirm_delete" }
   | { kind: "await_save_amount" }
+  | { kind: "await_withdraw" }
   | { kind: "await_convert"; from: "NGN" | "USD"; to: "NGN" | "USD" }
   | { kind: "login_pin"; tries: number }
   | { kind: "reveal_card"; tries: number };
@@ -242,9 +243,20 @@ export async function handleMessage(channel: Channel, msg: IncomingMessage): Pro
     }
     await getStore().setFlow(sessionId, null);
     const events = await store.listEvents(sessionId);
-    const card = events.find((e) => e.kind === "card")?.detail as
+    let card = events.find((e) => e.kind === "card")?.detail as
       | { pan?: string; cvv?: string; exp?: string; brand?: string; currency?: string }
       | undefined;
+    // Older cards were stored without the full number — mint a persistent one now
+    // so the reveal works and stays consistent from here on.
+    if (!card?.pan) {
+      const res = await getMoneyProvider().createVirtualCard({ sessionId }, { currency: "NGN", label: "Kudi card" });
+      if (res.ok) {
+        const c = res.data;
+        const exp = `${String(c.expMonth).padStart(2, "0")}/${String(c.expYear).padStart(2, "0")}`;
+        card = { pan: c.pan, cvv: c.cvv, exp, brand: c.brand, currency: c.currency };
+        await ev(sessionId, { kind: "card", detail: { last4: c.last4, exp, brand: c.brand, currency: c.currency, label: c.label, pan: c.pan, cvv: c.cvv } });
+      }
+    }
     if (!card?.pan) {
       await channel.send({ chatId: msg.chatId, text: "I no fit find your card details. Try creating one." });
       return;
@@ -402,6 +414,22 @@ export async function handleMessage(channel: Channel, msg: IncomingMessage): Pro
     }
     await getStore().setFlow(sessionId, null);
     await doSave(channel, sessionId, msg.chatId, amount);
+    return;
+  }
+
+  if (state?.kind === "await_withdraw") {
+    if (lower === "cancel") {
+      await getStore().setFlow(sessionId, null);
+      await channel.send({ chatId: msg.chatId, text: "Okay, no wahala." });
+      return;
+    }
+    const amount = parseAmount(text, "NGN");
+    if (!amount) {
+      await channel.send({ chatId: msg.chatId, text: "Tell me a clear amount to withdraw, e.g. 2k or 2000." });
+      return;
+    }
+    await getStore().setFlow(sessionId, null);
+    await doWithdraw(channel, sessionId, msg.chatId, amount);
     return;
   }
 
@@ -977,6 +1005,24 @@ async function doSave(channel: Channel, sessionId: string, chatId: string, amoun
   await channel.send({ chatId, text: `🐷 Saved ${formatMoney(res.data.savedNow)} ✅\n<i>Fee: ₦25</i>` });
 }
 
+/** Move money from the savings pot back to the spendable wallet. Recorded as a
+ * negative savings event, so it both shrinks the pot and frees up NGN. */
+async function doWithdraw(channel: Channel, sessionId: string, chatId: string, amount: Money): Promise<void> {
+  const saved = await savingsTotalMinor(sessionId);
+  if (amount.minor > saved) {
+    await channel.send({
+      chatId,
+      text: `You only get ${formatMoney(money(saved, "NGN"))} for savings, so you no fit withdraw ${formatMoney(amount)}.`,
+    });
+    return;
+  }
+  await ev(sessionId, { kind: "savings", amountMinor: -amount.minor, currency: "NGN", detail: { withdraw: true } });
+  await channel.send({
+    chatId,
+    text: `✅ Moved ${formatMoney(amount)} from savings back to your wallet.\n🐷 Savings left: ${formatMoney(money(saved - amount.minor, "NGN"))}`,
+  });
+}
+
 /** Validate funds then put a conversion behind the PIN gate. Shared by the
  * one-shot ("change 10k to dollar") and two-step (tap Convert → type amount) paths. */
 async function startConvert(
@@ -1024,6 +1070,56 @@ async function tryHandleLocalIntent(channel: Channel, sessionId: string, chatId:
         "🛡️ I automatically flag unusual transfers, and every transfer needs your PIN. A small ₦25 fee applies per transaction.\n\n" +
         "You fit talk by text or voice note. Type <b>delete account</b> to close your account.",
       keyboard: MENU_KEYBOARD,
+    });
+    return true;
+  }
+
+  // 💡 Financial advice — "can I afford X?" Deterministic, uses the real balance.
+  if (/\bafford\b|can i (buy|get|afford)|fit (i )?(buy|afford|get)|do i have enough|enough (money|cash)|i wan(t)? (to )?buy/i.test(lower)) {
+    const amount = parseAmount(text, "NGN");
+    if (!amount) {
+      await channel.send({ chatId, text: "How much the thing cost? e.g. “can I afford an iPhone of 5m?”" });
+      return true;
+    }
+    const bal = await provider.getBalances({ sessionId });
+    const ngn = bal.ok ? (bal.data.find((b) => b.currency === "NGN")?.available.minor ?? 0) : 0;
+    const saved = await savingsTotalMinor(sessionId);
+    const pool = ngn + saved;
+    const cost = amount.minor;
+    if (ngn >= cost) {
+      const after = ngn - cost;
+      const pct = Math.round((cost / Math.max(1, ngn)) * 100);
+      const note =
+        pct >= 70
+          ? `But e go chop ${pct}% of your money — you go remain only ${formatMoney(money(after, "NGN"))}. Think am well.`
+          : `You go still get ${formatMoney(money(after, "NGN"))} left. E dey manageable 👍`;
+      await channel.send({
+        chatId,
+        text: `💡 <b>Yes, you fit afford am.</b>\n\nCost: ${formatMoney(amount)}\nWallet: ${formatMoney(money(ngn, "NGN"))}\n\n${note}`,
+      });
+      return true;
+    }
+    if (pool >= cost) {
+      const need = cost - ngn;
+      await channel.send({
+        chatId,
+        text:
+          `💡 <b>Almost — you go need your savings.</b>\n\n` +
+          `Cost: ${formatMoney(amount)}\nWallet: ${formatMoney(money(ngn, "NGN"))} + Savings: ${formatMoney(money(saved, "NGN"))}\n\n` +
+          `Move ${formatMoney(money(need, "NGN"))} from savings and you fit buy am. Say “withdraw ${Math.ceil(need / 100000) * 1000}k”.`,
+      });
+      return true;
+    }
+    const shortfall = cost - pool;
+    const weeks = 13; // ~3 months
+    const weekly = Math.max(10000, Math.ceil(shortfall / weeks / 10000) * 10000);
+    const realWeeks = Math.ceil(shortfall / weekly);
+    await channel.send({
+      chatId,
+      text:
+        `💡 <b>Not yet.</b>\n\n` +
+        `Cost: ${formatMoney(amount)}\nYou get: ${formatMoney(money(pool, "NGN"))} (wallet + savings)\nYou short: ${formatMoney(money(shortfall, "NGN"))}\n\n` +
+        `If you save ${formatMoney(money(weekly, "NGN"))} every week, you go reach in about ${realWeeks} weeks. Say “save ${Math.round(weekly / 100000)}k” to start 🐷`,
     });
     return true;
   }
@@ -1211,6 +1307,18 @@ async function tryHandleLocalIntent(channel: Channel, sessionId: string, chatId:
       .sort((a, b) => b[1] - a[1])
       .map(([c, m]) => `• ${c}: ${formatMoney(money(m, "NGN"))} (${Math.round((m / total) * 100)}%)`);
     await channel.send({ chatId, text: `📊 <b>Where your money went</b>\n${lines.join("\n")}\n\nTotal: ${formatMoney(money(total, "NGN"))}` });
+    return true;
+  }
+
+  // Withdraw from savings back to the wallet.
+  if (/withdraw|cash ?out|take .*(from )?saving|remove .*saving|move .*saving.*(wallet|out)|from savings/i.test(lower)) {
+    const amount = parseAmount(text, "NGN");
+    if (!amount) {
+      await getStore().setFlow(sessionId, { kind: "await_withdraw" });
+      await channel.send({ chatId, text: "How much you wan withdraw from savings? e.g. 2k or 2000." });
+      return true;
+    }
+    await doWithdraw(channel, sessionId, chatId, amount);
     return true;
   }
 
