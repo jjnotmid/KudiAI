@@ -30,6 +30,25 @@ const CARD_FEE_MINOR = 20_000; // ₦200 to issue a virtual card (revenue)
 const USD_ACCOUNT_FEE_MINOR = 50_000; // ₦500 to open a USD account (revenue)
 const SESSION_LOCK_MS = 2 * 60_000; // idle this long → require the login PIN on return
 
+// Persistent reply keyboard docked at the text box — the app's main menu.
+const MENU_KEYBOARD: readonly (readonly string[])[] = [
+  ["💰 Balance", "📤 Send money"],
+  ["🐷 Save", "🔁 Convert"],
+  ["💳 Card", "📊 Spending"],
+  ["💵 USD account", "❓ Help"],
+];
+// Each menu label maps to a phrase our intent handlers already understand.
+const MENU_MAP: Record<string, string> = {
+  "💰 balance": "check balance",
+  "📤 send money": "send money",
+  "🐷 save": "save",
+  "🔁 convert": "convert",
+  "💳 card": "create a card",
+  "📊 spending": "where my money go",
+  "💵 usd account": "open usd account",
+  "❓ help": "help",
+};
+
 /** A dashboard-style greeting: current balance + quick actions. Shown on greetings
  * and on returning, so the user always lands on something useful. */
 async function sendDashboard(channel: Channel, sessionId: string, chatId: string): Promise<void> {
@@ -45,11 +64,8 @@ async function sendDashboard(channel: Channel, sessionId: string, chatId: string
     text:
       "👋 <b>Welcome to Kudi</b>\n\n" +
       `💰 <b>Balance:</b> ${balLine}\n\n` +
-      "Wetin you wan do today?\n" +
-      "📤 Send money   🐷 Save   🔁 Convert to $\n" +
-      "💳 Create card   📊 Check spending\n\n" +
-      "Just talk to me — by text or voice note — or tap below 👇",
-    buttons: QUICK_BUTTONS,
+      "Wetin you wan do today? Tap a button below 👇, or just talk to me — by text or voice note.",
+    keyboard: MENU_KEYBOARD,
   });
 }
 
@@ -154,12 +170,15 @@ export async function handleMessage(channel: Channel, msg: IncomingMessage): Pro
     await channel.send({ chatId: msg.chatId, text: "You dey go too fast. Wait small make we continue." });
     return;
   }
-  const text = msg.text.trim();
-  const lower = text.toLowerCase();
+  let text = msg.text.trim();
   if (!text) {
     await channel.send({ chatId: msg.chatId, text: "Talk to me — check balance, make card, or send money." });
     return;
   }
+  // A tap on the docked menu keyboard arrives as its label text → map to a command.
+  const mapped = MENU_MAP[text.toLowerCase()];
+  if (mapped) text = mapped;
+  const lower = text.toLowerCase();
 
   const state = (await getStore().getFlow(sessionId)) as Flow | null;
   log("info", "msg.in", { sessionId, text: text.slice(0, 60), flow: state?.kind ?? "none", voice: msg.fromVoice });
@@ -322,8 +341,8 @@ export async function handleMessage(channel: Channel, msg: IncomingMessage): Pro
         "📤 Send money to any bank\n" +
         "🐷 Save money\n" +
         "🪙 Receive crypto (USDC)\n\n" +
-        "Just talk to me — by text or voice note. Tap a button below, or type <b>help</b> anytime.",
-      buttons: QUICK_BUTTONS,
+        "Just talk to me — by text or voice note — or tap a button below 👇",
+      keyboard: MENU_KEYBOARD,
     });
     return;
   }

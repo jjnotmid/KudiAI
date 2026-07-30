@@ -32,7 +32,13 @@ export class TelegramChannel implements Channel {
             row.map((b) => ({ text: b.label, callback_data: b.data })),
           ),
         }
-      : undefined;
+      : msg.keyboard
+        ? {
+            keyboard: msg.keyboard.map((row) => row.map((label) => ({ text: label }))),
+            resize_keyboard: true,
+            is_persistent: true,
+          }
+        : undefined;
     // A failed status message must NOT abort a money/account operation, so send
     // is best-effort: log and continue rather than throw.
     try {

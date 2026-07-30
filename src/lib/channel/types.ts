@@ -27,8 +27,11 @@ export interface ChannelButton {
 export interface OutgoingMessage {
   readonly chatId: string;
   readonly text: string;
-  /** Optional rows of buttons for a confirmation gate / choices. */
+  /** Optional rows of inline buttons for a confirmation gate / choices. */
   readonly buttons?: readonly (readonly ChannelButton[])[];
+  /** Optional persistent reply keyboard (docked at the text box). Rows of labels;
+   * tapping one sends its label as a normal text message. Persists until replaced. */
+  readonly keyboard?: readonly (readonly string[])[];
 }
 
 /** A button press coming back from the channel. */
