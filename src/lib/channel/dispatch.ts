@@ -28,7 +28,30 @@ const LARGE_TRANSFER_MINOR = 5_000_000; // ₦50,000 → flag for the admin (not
 const TXN_FEE_MINOR = 2_500; // ₦25 flat fee on every money move (revenue)
 const CARD_FEE_MINOR = 20_000; // ₦200 to issue a virtual card (revenue)
 const USD_ACCOUNT_FEE_MINOR = 50_000; // ₦500 to open a USD account (revenue)
-const SESSION_LOCK_MS = 5 * 60_000; // idle this long → require the login PIN on return
+const SESSION_LOCK_MS = 2 * 60_000; // idle this long → require the login PIN on return
+
+/** A dashboard-style greeting: current balance + quick actions. Shown on greetings
+ * and on returning, so the user always lands on something useful. */
+async function sendDashboard(channel: Channel, sessionId: string, chatId: string): Promise<void> {
+  let balLine = "—";
+  try {
+    const bal = await getMoneyProvider().getBalances({ sessionId });
+    if (bal.ok && bal.data.length) balLine = bal.data.map((b) => formatMoney(b.available)).join("  ·  ");
+  } catch {
+    /* balance is best-effort on the dashboard */
+  }
+  await channel.send({
+    chatId,
+    text:
+      "👋 <b>Welcome to Kudi</b>\n\n" +
+      `💰 <b>Balance:</b> ${balLine}\n\n` +
+      "Wetin you wan do today?\n" +
+      "📤 Send money   🐷 Save   🔁 Convert to $\n" +
+      "💳 Create card   📊 Check spending\n\n" +
+      "Just talk to me — by text or voice note — or tap below 👇",
+    buttons: QUICK_BUTTONS,
+  });
+}
 
 /**
  * App-lock: if a set-up user returns after being idle past SESSION_LOCK_MS (i.e.
@@ -91,7 +114,8 @@ type Flow =
   | { kind: "kyc_selfie" }
   | { kind: "confirm_delete" }
   | { kind: "await_save_amount" }
-  | { kind: "login_pin"; tries: number };
+  | { kind: "login_pin"; tries: number }
+  | { kind: "reveal_card"; tries: number };
 
 function code6(): string {
   return String(randomInt(100000, 1000000));
@@ -158,9 +182,58 @@ export async function handleMessage(channel: Channel, msg: IncomingMessage): Pro
     await getStore().setFlow(sessionId, null);
     await store.setLastSeen(sessionId, Date.now());
     await ev(sessionId, { kind: "login_success" });
-    await channel.send({ chatId: msg.chatId, text: "🔓 Unlocked. Welcome back! Wetin you wan do?", buttons: QUICK_BUTTONS });
+    await channel.send({ chatId: msg.chatId, text: "🔓 Unlocked ✅" });
+    await sendDashboard(channel, sessionId, msg.chatId);
     return;
   }
+  // Reveal full card details — PIN-gated, like unlocking a card in a banking app.
+  if (state?.kind === "reveal_card") {
+    await channel.deleteMessage?.(msg.chatId, msg.messageId);
+    if (lower === "cancel") {
+      await getStore().setFlow(sessionId, null);
+      await channel.send({ chatId: msg.chatId, text: "Okay, I no show am." });
+      return;
+    }
+    if (!isValidPinFormat(text)) {
+      await channel.send({ chatId: msg.chatId, text: "Enter your 4-digit PIN to reveal your card, or type cancel." });
+      return;
+    }
+    const ph = await store.getPinHash(sessionId);
+    if (!ph || !verifyPin(text, ph)) {
+      const tries = state.tries + 1;
+      await ev(sessionId, { kind: "pin_failed", flagged: true, detail: { tries, ctx: "reveal_card" } });
+      if (tries >= 3) {
+        await getStore().setFlow(sessionId, null);
+        await channel.send({ chatId: msg.chatId, text: "Too many wrong PIN. Try again later." });
+        return;
+      }
+      await getStore().setFlow(sessionId, { kind: "reveal_card", tries });
+      await channel.send({ chatId: msg.chatId, text: "Wrong PIN. Try again, or type cancel." });
+      return;
+    }
+    await getStore().setFlow(sessionId, null);
+    const events = await store.listEvents(sessionId);
+    const card = events.find((e) => e.kind === "card")?.detail as
+      | { pan?: string; cvv?: string; exp?: string; brand?: string; currency?: string }
+      | undefined;
+    if (!card?.pan) {
+      await channel.send({ chatId: msg.chatId, text: "I no fit find your card details. Try creating one." });
+      return;
+    }
+    const num = String(card.pan).replace(/(.{4})/g, "$1 ").trim();
+    await ev(sessionId, { kind: "card_revealed" });
+    await channel.send({
+      chatId: msg.chatId,
+      text:
+        `💳 <b>Your card details</b>\n\n` +
+        `<code>${num}</code>\n` +
+        `Expiry: <b>${card.exp}</b>   CVV: <b>${card.cvv}</b>\n` +
+        `${String(card.brand ?? "visa").toUpperCase()} · ${card.currency ?? "NGN"}\n\n` +
+        `<i>Keep these details private.</i>`,
+    });
+    return;
+  }
+
   // Otherwise, engage the lock if they've been away.
   if (await maybeLock(channel, sessionId, msg.chatId, state)) return;
 
@@ -170,7 +243,7 @@ export async function handleMessage(channel: Channel, msg: IncomingMessage): Pro
     const pin0 = await store.getPinHash(sessionId);
     const acc0 = await store.getBmoniAccount(sessionId);
     if (pin0) {
-      await channel.send({ chatId: msg.chatId, text: "Welcome back to Kudi 👋 Wetin you wan do?", buttons: QUICK_BUTTONS });
+      await sendDashboard(channel, sessionId, msg.chatId);
     } else if (!acc0) {
       await ev(sessionId, { kind: "onboarding_start" });
       await getStore().setFlow(sessionId, { kind: "su_name" });
@@ -185,6 +258,32 @@ export async function handleMessage(channel: Channel, msg: IncomingMessage): Pro
       await getStore().setFlow(sessionId, { kind: "set_pin" });
       await channel.send({ chatId: msg.chatId, text: "Let's finish setting up — send a 4-digit PIN (I go ask you to confirm it)." });
     }
+    return;
+  }
+
+  // A greeting or "new chat" feel → land on the dashboard (or route into setup).
+  const isGreeting = /^(hi+|hello+|hey+|yo+|sup|good\s*(morning|afternoon|evening|day)|how far|how you dey|abeg|menu|dashboard|home|kudi|start)\b/i.test(
+    lower,
+  );
+  if (isGreeting && !state?.kind) {
+    if (await store.getPinHash(sessionId)) {
+      await sendDashboard(channel, sessionId, msg.chatId);
+      return;
+    }
+    if (!(await store.getBmoniAccount(sessionId))) {
+      await ev(sessionId, { kind: "onboarding_start" });
+      await getStore().setFlow(sessionId, { kind: "su_name" });
+      await channel.send({
+        chatId: msg.chatId,
+        text:
+          "Welcome to Kudi 👋 I be your money assistant — you fit talk to me in English or Pidgin, by text or voice note.\n\n" +
+          "💡 During setup: type <b>back</b> to change your last answer, or <b>cancel</b> to stop.\n\n" +
+          "Let's open your account. First, wetin be your full name?",
+      });
+      return;
+    }
+    await getStore().setFlow(sessionId, { kind: "set_pin" });
+    await channel.send({ chatId: msg.chatId, text: "Let's finish setting up — send a 4-digit PIN (I go ask you to confirm it)." });
     return;
   }
 
@@ -600,6 +699,11 @@ export async function handleCallback(
     await channel.send({ chatId: cb.chatId, text: "Okay, I no go do am." });
     return;
   }
+  if (kind === "reveal" && ref === "card") {
+    await getStore().setFlow(sessionId, { kind: "reveal_card", tries: 0 });
+    await channel.send({ chatId: cb.chatId, text: "🔒 Enter your 4-digit PIN to reveal your full card details." });
+    return;
+  }
   if (kind === "quick" && ref) {
     const actions: Record<string, string> = {
       balance: "check balance",
@@ -873,10 +977,11 @@ async function tryHandleLocalIntent(channel: Channel, sessionId: string, chatId:
       await channel.send({
         chatId,
         text:
-          `💳 <b>You already get a card</b>\n\n` +
+          `💳 <b>Your card</b>\n\n` +
           `${String(d.brand ?? "visa").toUpperCase()} •••• ${d.last4 ?? "****"}\n` +
           `Expiry: <b>${d.exp ?? ""}</b> · ${d.currency ?? "NGN"}\n\n` +
-          `You fit only get one card for now.`,
+          `Tap below to see the full number, then enter your PIN.`,
+        buttons: [[{ label: "🔓 Reveal full details", data: "reveal:card", kind: "default" }]],
       });
       return true;
     }
@@ -897,7 +1002,7 @@ async function tryHandleLocalIntent(channel: Channel, sessionId: string, chatId:
     const c = res.data;
     const exp = `${String(c.expMonth).padStart(2, "0")}/${String(c.expYear).padStart(2, "0")}`;
     await ev(sessionId, { kind: "card_fee", amountMinor: CARD_FEE_MINOR, currency: "NGN", detail: { reason: "card_creation" } });
-    await ev(sessionId, { kind: "card", detail: { last4: c.last4, exp, brand: c.brand, currency: c.currency, label: c.label } });
+    await ev(sessionId, { kind: "card", detail: { last4: c.last4, exp, brand: c.brand, currency: c.currency, label: c.label, pan: c.pan, cvv: c.cvv } });
     const num = c.pan.replace(/(.{4})/g, "$1 ").trim();
     await channel.send({
       chatId,
