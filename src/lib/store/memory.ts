@@ -32,7 +32,15 @@ export class MemoryStore implements Store {
   }
   async sumSpent(sessionId: string): Promise<number> {
     return this.events
-      .filter((e) => e.sessionId === sessionId && (e.kind === "transfer" || e.kind === "savings"))
+      .filter(
+        (e) =>
+          e.sessionId === sessionId &&
+          (e.kind === "transfer" ||
+            e.kind === "savings" ||
+            e.kind === "fee" ||
+            e.kind === "card_fee" ||
+            e.kind === "usd_account_fee"),
+      )
       .reduce((s, e) => s + (e.amountMinor ?? 0), 0);
   }
   async listEvents(sessionId: string): Promise<KudiEvent[]> {

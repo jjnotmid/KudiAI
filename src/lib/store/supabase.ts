@@ -96,7 +96,7 @@ export class SupabaseStore implements Store {
       .from("kudi_events")
       .select("amount_minor,kind")
       .eq("session_id", sessionId)
-      .in("kind", ["transfer", "savings"]);
+      .in("kind", ["transfer", "savings", "fee", "card_fee", "usd_account_fee"]);
     if (error) return 0;
     return (data ?? []).reduce((s, r) => s + (Number(r.amount_minor) || 0), 0);
   }

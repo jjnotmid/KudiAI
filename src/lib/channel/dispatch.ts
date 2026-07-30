@@ -25,6 +25,14 @@ import type { Channel, IncomingMessage } from "./types";
  */
 
 const LARGE_TRANSFER_MINOR = 5_000_000; // ₦50,000 → flag for the admin (not block)
+const TXN_FEE_MINOR = 2_500; // ₦25 flat fee on every money move (revenue)
+const CARD_FEE_MINOR = 20_000; // ₦200 to issue a virtual card (revenue)
+const USD_ACCOUNT_FEE_MINOR = 50_000; // ₦500 to open a USD account (revenue)
+
+/** Record the ₦25 platform fee for a completed money move. Reflected in balance. */
+async function chargeFee(sessionId: string, reason: string): Promise<void> {
+  await ev(sessionId, { kind: "fee", amountMinor: TXN_FEE_MINOR, currency: "NGN", detail: { reason } });
+}
 
 /** AI fraud check — warn (don't block) on unusually large transfers. */
 function fraudLine(amountMinor: number): string {
@@ -679,8 +687,10 @@ async function executeConfirmed(
         return;
       }
       await ev(sessionId, { kind: "transfer", amountMinor: amount.minor, currency: amount.currency, detail: { to: res.data.beneficiaryName, ref: res.data.id } });
-      await recordOutcome(sessionId, `Sent ${formatMoney(res.data.amount)} to ${res.data.beneficiaryName}. Balance now ${formatMoney(res.data.balanceAfter)}.`);
-      await channel.send({ chatId, text: transferReceipt(res.data) });
+      await chargeFee(sessionId, "transfer");
+      const balAfter = money(Math.max(0, res.data.balanceAfter.minor - TXN_FEE_MINOR), "NGN");
+      await recordOutcome(sessionId, `Sent ${formatMoney(res.data.amount)} to ${res.data.beneficiaryName}. Balance now ${formatMoney(balAfter)}.`);
+      await channel.send({ chatId, text: transferReceipt({ ...res.data, balanceAfter: balAfter }) });
     } else if (payload.action === "convert" && payload.to) {
       const res = await provider.convert({ sessionId }, { amount, to: payload.to, idempotencyKey: payload.nonce });
       if (!res.ok) {
@@ -689,6 +699,7 @@ async function executeConfirmed(
         return;
       }
       await ev(sessionId, { kind: "convert", amountMinor: amount.minor, currency: amount.currency });
+      await chargeFee(sessionId, "convert");
       await recordOutcome(sessionId, `Converted ${formatMoney(res.data.from)} to ${formatMoney(res.data.to)}.`);
       await channel.send({ chatId, text: conversionReceipt(res.data) });
     }
@@ -716,6 +727,7 @@ function transferReceipt(r: { id: string; amount: Money; beneficiaryName: string
     `Ref: <code>${refOf(r.id)}</code>`,
     `Date: ${whenOf(r.createdAt)}`,
     "Status: Completed",
+    "Fee: ₦25",
     `New balance: ${formatMoney(r.balanceAfter)}`,
     "",
     "<i>Kudi · Proof of payment</i>",
@@ -729,6 +741,7 @@ function conversionReceipt(r: { id: string; from: Money; to: Money; rateDisplay:
     `Rate: ${r.rateDisplay}`,
     `Ref: <code>${refOf(r.id)}</code>`,
     `Date: ${whenOf(r.createdAt)}`,
+    "Fee: ₦25",
     "",
     "<i>Kudi · Proof of payment</i>",
   ].join("\n");
@@ -753,7 +766,8 @@ async function doSave(channel: Channel, sessionId: string, chatId: string, amoun
     return;
   }
   await ev(sessionId, { kind: "savings", amountMinor: amount.minor, currency: amount.currency });
-  await channel.send({ chatId, text: `🐷 Saved ${formatMoney(res.data.savedNow)} ✅` });
+  await chargeFee(sessionId, "savings");
+  await channel.send({ chatId, text: `🐷 Saved ${formatMoney(res.data.savedNow)} ✅\n<i>Fee: ₦25</i>` });
 }
 
 async function tryHandleLocalIntent(channel: Channel, sessionId: string, chatId: string, text: string): Promise<boolean> {
@@ -766,11 +780,14 @@ async function tryHandleLocalIntent(channel: Channel, sessionId: string, chatId:
       text:
         "Here's how to use Kudi 👇\n\n" +
         "💰 <b>Balance</b> — “how much I get?”\n" +
-        "💳 <b>Card</b> — “create a card”\n" +
         "📤 <b>Send</b> — “send 5k”, then I ask for the account number + bank\n" +
         "🐷 <b>Save</b> — “save 2k”\n" +
+        "💵 <b>USD account</b> — “open USD account” (₦500)\n" +
+        "🔁 <b>Convert</b> — “change 10k to dollar”\n" +
+        "📊 <b>Spending</b> — “where my money go?”\n" +
+        "💳 <b>Card</b> — “create a card” (₦200)\n" +
         "🪙 <b>Receive crypto</b> — “my wallet address”\n" +
-        "🔒 Every transfer needs your PIN.\n\n" +
+        "🔒 Every transfer needs your PIN. A small ₦25 fee applies per transaction.\n\n" +
         "You fit talk by text or voice note. Type <b>delete account</b> to close your account.",
       buttons: QUICK_BUTTONS,
     });
@@ -793,14 +810,39 @@ async function tryHandleLocalIntent(channel: Channel, sessionId: string, chatId:
   }
 
   if (/card|virtual/i.test(lower)) {
+    const events = await getStore().listEvents(sessionId);
+    const existing = events.find((e) => e.kind === "card");
+    if (existing) {
+      const d = existing.detail ?? {};
+      await channel.send({
+        chatId,
+        text:
+          `💳 <b>You already get a card</b>\n\n` +
+          `${String(d.brand ?? "visa").toUpperCase()} •••• ${d.last4 ?? "****"}\n` +
+          `Expiry: <b>${d.exp ?? ""}</b> · ${d.currency ?? "NGN"}\n\n` +
+          `You fit only get one card for now.`,
+      });
+      return true;
+    }
+    const bal = await provider.getBalances({ sessionId });
+    const ngnMinor = bal.ok ? (bal.data.find((b) => b.currency === "NGN")?.available.minor ?? 0) : 0;
+    if (ngnMinor < CARD_FEE_MINOR) {
+      await channel.send({
+        chatId,
+        text: `Creating a card cost ₦200, but your balance na ${formatMoney(money(ngnMinor, "NGN"))}. Fund your wallet first.`,
+      });
+      return true;
+    }
     const res = await provider.createVirtualCard({ sessionId }, { currency: "NGN", label: "Kudi card" });
     if (!res.ok) {
       await channel.send({ chatId, text: res.error.userMessage });
       return true;
     }
     const c = res.data;
-    const num = c.pan.replace(/(.{4})/g, "$1 ").trim();
     const exp = `${String(c.expMonth).padStart(2, "0")}/${String(c.expYear).padStart(2, "0")}`;
+    await ev(sessionId, { kind: "card_fee", amountMinor: CARD_FEE_MINOR, currency: "NGN", detail: { reason: "card_creation" } });
+    await ev(sessionId, { kind: "card", detail: { last4: c.last4, exp, brand: c.brand, currency: c.currency, label: c.label } });
+    const num = c.pan.replace(/(.{4})/g, "$1 ").trim();
     await channel.send({
       chatId,
       text:
@@ -808,6 +850,7 @@ async function tryHandleLocalIntent(channel: Channel, sessionId: string, chatId:
         `<code>${num}</code>\n` +
         `Expiry: <b>${exp}</b>   CVV: <b>${c.cvv}</b>\n` +
         `${c.brand.toUpperCase()} · ${c.currency}\n\n` +
+        `<i>Card fee: ₦200 charged.</i>\n` +
         `Keep these details private.`,
     });
     return true;
@@ -836,10 +879,51 @@ async function tryHandleLocalIntent(channel: Channel, sessionId: string, chatId:
     return true;
   }
 
+  if (/(open|create|get|want|need).*(usd|dollar).*(account|wallet)|(usd|dollar)\s+(account|wallet)/i.test(lower)) {
+    const events = await getStore().listEvents(sessionId);
+    if (events.some((e) => e.kind === "usd_account")) {
+      await channel.send({ chatId, text: "You already get a USD account ✅ You fit convert naira to dollars anytime." });
+      return true;
+    }
+    if (!events.some((e) => e.kind === "kyc_completed" || e.kind === "account_created")) {
+      await channel.send({ chatId, text: "To open a USD account you need to verify your identity first. Type /start to complete verification." });
+      return true;
+    }
+    const bal = await provider.getBalances({ sessionId });
+    const ngnMinor = bal.ok ? (bal.data.find((b) => b.currency === "NGN")?.available.minor ?? 0) : 0;
+    if (ngnMinor < USD_ACCOUNT_FEE_MINOR) {
+      await channel.send({
+        chatId,
+        text: `Opening a USD account cost ₦500, but your balance na ${formatMoney(money(ngnMinor, "NGN"))}. Fund your wallet first.`,
+      });
+      return true;
+    }
+    await ev(sessionId, { kind: "usd_account_fee", amountMinor: USD_ACCOUNT_FEE_MINOR, currency: "NGN", detail: { reason: "usd_account" } });
+    await ev(sessionId, { kind: "usd_account" });
+    await channel.send({
+      chatId,
+      text:
+        "✅ <b>USD account opened</b>\n\n" +
+        "You fit now hold and receive dollars. <i>₦500 charged.</i>\n" +
+        "Say “change 10k to dollar” to fund it.",
+    });
+    return true;
+  }
+
   if (/\bconvert\b|\bexchange\b|\bswap\b|change\s+.*(to|into)\s*(dollar|usd|naira|ngn|\$)/i.test(lower)) {
     const toUsd = /(dollar|usd|\$)/i.test(lower);
     const from: "NGN" | "USD" = toUsd ? "NGN" : "USD";
     const to: "NGN" | "USD" = toUsd ? "USD" : "NGN";
+    if (to === "USD") {
+      const events = await getStore().listEvents(sessionId);
+      if (!events.some((e) => e.kind === "usd_account")) {
+        await channel.send({
+          chatId,
+          text: "To hold dollars you need a USD account. Opening one cost ₦500 — just say “open USD account” to set am up.",
+        });
+        return true;
+      }
+    }
     const parsed = parseAmount(text, from);
     if (!parsed) {
       await channel.send({ chatId, text: "How much you wan convert? For example: change 10k to dollar." });

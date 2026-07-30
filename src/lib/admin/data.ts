@@ -36,27 +36,31 @@ export interface AdminKpis {
   events: number;
   transfers: number;
   transferVolumeMinor: number;
+  revenueMinor: number;
   flagged: number;
   configured: boolean;
 }
 
 export async function getKpis(): Promise<AdminKpis> {
   const db = client();
-  const empty: AdminKpis = { users: 0, events: 0, transfers: 0, transferVolumeMinor: 0, flagged: 0, configured: Boolean(db) };
+  const empty: AdminKpis = { users: 0, events: 0, transfers: 0, transferVolumeMinor: 0, revenueMinor: 0, flagged: 0, configured: Boolean(db) };
   if (!db) return empty;
   try {
-    const [users, events, flagged, transfers] = await Promise.all([
+    const [users, events, flagged, transfers, revenue] = await Promise.all([
       db.from("kudi_bmoni_accounts").select("session_id", { count: "exact", head: true }),
       db.from("kudi_events").select("id", { count: "exact", head: true }),
       db.from("kudi_events").select("id", { count: "exact", head: true }).eq("flagged", true),
       db.from("kudi_events").select("amount_minor").eq("kind", "transfer"),
+      db.from("kudi_events").select("amount_minor").in("kind", ["fee", "card_fee", "usd_account_fee"]),
     ]);
     const volume = (transfers.data ?? []).reduce((s, r) => s + (Number(r.amount_minor) || 0), 0);
+    const revenueMinor = (revenue.data ?? []).reduce((s, r) => s + (Number(r.amount_minor) || 0), 0);
     return {
       users: users.count ?? 0,
       events: events.count ?? 0,
       transfers: (transfers.data ?? []).length,
       transferVolumeMinor: volume,
+      revenueMinor,
       flagged: flagged.count ?? 0,
       configured: true,
     };

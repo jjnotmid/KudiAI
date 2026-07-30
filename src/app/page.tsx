@@ -165,6 +165,33 @@ export default function Home() {
         </div>
       </section>
 
+      {/* Features */}
+      <section className="border-t border-paper-2 bg-paper-2/40">
+        <div className="mx-auto max-w-4xl px-5 py-16">
+          <h2 className="font-display text-3xl font-semibold text-naira">Everything money, one chat</h2>
+          <p className="mt-3 max-w-xl text-lg text-ink-soft">
+            No app to learn. Kudi does the work — you just talk.
+          </p>
+          <div className="mt-8 grid gap-x-8 gap-y-6 sm:grid-cols-2">
+            {[
+              ["Send to any bank", "Verified recipient name before a naira leaves. PIN on every transfer."],
+              ["Save on the go", "“Save 2k” and it’s tucked away. Build the habit without thinking."],
+              ["USD accounts", "Open a dollar account and convert naira to USD at a live rate."],
+              ["Fraud watch", "Unusual transfers get flagged and double-checked before they go out."],
+              ["Money advice", "“Can I afford this?” Kudi answers from your real balance."],
+              ["Spending insights", "“Where did my money go?” — a clear breakdown, any time."],
+              ["Virtual cards", "Spin up a card for online payments in seconds."],
+              ["Voice or text, EN & Pidgin", "Send a voice note in Pidgin. Kudi understands and replies your way."],
+            ].map(([title, body]) => (
+              <div key={title}>
+                <h3 className="font-display text-lg font-semibold text-ink">{title}</h3>
+                <p className="mt-1 text-ink-soft">{body}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+
       {/* Team */}
       <section className="border-t border-paper-2 bg-paper-2/40">
         <div className="mx-auto max-w-5xl px-5 py-16">

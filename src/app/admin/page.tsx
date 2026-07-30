@@ -49,7 +49,8 @@ export default async function AdminDashboard() {
         ) : null}
 
         {/* KPIs */}
-        <section className="grid grid-cols-2 gap-4 md:grid-cols-4">
+        <section className="grid grid-cols-2 gap-4 md:grid-cols-5">
+          <Kpi label="Revenue earned" value={amountText(kpis.revenueMinor, "NGN")} />
           <Kpi label="Users onboarded" value={String(kpis.users)} />
           <Kpi label="Transfers" value={String(kpis.transfers)} />
           <Kpi label="Transfer volume" value={amountText(kpis.transferVolumeMinor, "NGN")} />
