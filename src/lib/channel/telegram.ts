@@ -62,8 +62,9 @@ export class TelegramChannel implements Channel {
     });
   }
 
-  async deleteWebhook(): Promise<void> {
-    await this.call("deleteWebhook", { drop_pending_updates: false });
+  async deleteWebhook(dropPending = true): Promise<void> {
+    // Drop the backlog on startup so a fresh bot run doesn't replay old messages.
+    await this.call("deleteWebhook", { drop_pending_updates: dropPending });
   }
 
   async getUpdates(offset: number, timeoutSec = 25): Promise<TelegramUpdate[]> {

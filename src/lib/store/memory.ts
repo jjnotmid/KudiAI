@@ -53,5 +53,7 @@ export class MemoryStore implements Store {
   async reset(sessionId: string): Promise<void> {
     this.turns.delete(sessionId);
     this.nonces.delete(sessionId);
+    this.bmoni.delete(sessionId);
+    this.pins.delete(sessionId);
   }
 }

@@ -6,10 +6,10 @@ const TELEGRAM = "https://t.me/KudiAI_Bot";
  * Team — edit names/roles here and drop square photos in /public/team/.
  * Missing photos fall back to a monogram tile, so this renders fine today.
  */
-const TEAM: { name: string; role: string; photo?: string }[] = [
-  { name: "Team member", role: "Product & AI", photo: "/team/member1.jpg" },
-  { name: "Team member", role: "Backend & BMONI", photo: "/team/member2.jpg" },
-  { name: "Team member", role: "Frontend & Voice", photo: "/team/member3.jpg" },
+const TEAM: { name: string; role: string; photo?: string; github: string }[] = [
+  { name: "Usifoh Joshua", role: "Fullstack Developer", photo: "/team/joshua.jpg", github: "https://github.com/jjnotmid" },
+  { name: "Oyetunji Obadiah Samuel", role: "Product Manager", photo: "/team/obadiah.png", github: "https://github.com/oyetunjiobadiah" },
+  { name: "Olumuwagun Daniel Oluwaferanmi", role: "Frontend Developer", photo: "/team/daniel.png", github: "https://github.com/Danieldev" },
 ];
 
 function TelegramButton({ label = "Chat on Telegram" }: { label?: string }) {
@@ -32,44 +32,59 @@ export default function Home() {
       {/* Header */}
       <header className="mx-auto flex max-w-6xl items-center justify-between px-5 py-5">
         {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img src="/brand/kudi-wordmark.png" alt="Kudi" className="h-8 w-auto" />
+        <img src="/brand/kudi-wordmark-t.png" alt="Kudi AI" className="h-11 w-auto" />
         <div className="hidden sm:block">
           <TelegramButton />
         </div>
       </header>
 
       {/* Hero */}
-      <section className="mx-auto grid max-w-6xl items-center gap-10 px-5 pb-16 pt-8 md:grid-cols-2 md:pt-14">
-        <div>
-          <div className="tally-rule mb-6" aria-hidden>
-            <span /> <span /> <span /> <span />
+      <section className="relative overflow-hidden">
+        <div
+          className="pointer-events-none absolute inset-0 bg-[radial-gradient(55%_45%_at_12%_0%,rgba(12,75,58,0.06),transparent),radial-gradient(40%_40%_at_100%_15%,rgba(192,138,45,0.10),transparent)]"
+          aria-hidden
+        />
+        <div className="relative mx-auto grid max-w-6xl items-center gap-12 px-5 pb-24 pt-10 md:grid-cols-[1.05fr_0.95fr] md:pt-16">
+          <div>
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img src="/brand/kudi-wordmark-t.png" alt="Kudi AI" className="mb-7 h-24 w-auto md:h-32" />
+            <h1 className="font-display text-5xl font-bold leading-[1.02] tracking-tight text-naira md:text-[4.25rem] md:leading-[1.0]">
+              Talk to your money.
+              <br />
+              <span className="text-brass">It listens.</span>
+            </h1>
+            <p className="mt-6 max-w-md text-lg leading-relaxed text-ink-soft">
+              Check your balance, make a card, or send money just by talking — by voice or text, in
+              English or Pidgin. Kudi always asks before it moves a single naira.
+            </p>
+            <div className="mt-10 flex flex-col items-start gap-3">
+              <TelegramButton label="Start on Telegram" />
+              <span className="text-sm text-ink-soft">Free · No app to install · Voice or text</span>
+            </div>
           </div>
-          <h1 className="font-display text-5xl font-bold leading-[1.05] tracking-tight text-naira md:text-6xl">
-            Talk to your money.
-            <br />
-            It listens.
-          </h1>
-          <p className="mt-5 max-w-md text-lg text-ink-soft">
-            Kudi is a money assistant on Telegram. Check your balance, make a card, or send
-            money just by talking — in English or Pidgin, by voice or text. It always asks
-            before it moves your money.
-          </p>
-          <div className="mt-8 flex flex-wrap items-center gap-4">
-            <TelegramButton label="Start on Telegram" />
-            <span className="text-sm text-ink-soft">Free. No app to install.</span>
-          </div>
-        </div>
 
-        {/* Conversation receipt */}
-        <div className="rounded-2xl border border-paper-2 bg-white/60 p-5 shadow-sm">
-          <p className="mb-4 text-xs uppercase tracking-widest text-ink-soft">A Kudi conversation</p>
-          <div className="space-y-4 text-[15px]">
-            <Row who="You" text="How much I get?" />
-            <Row who="Kudi" text="You get ₦250,000 and $120." amount="₦250,000" />
-            <Row who="You" text="Send 5k give my brother" />
-            <Row who="Kudi" text="Send ₦5,000 to Chidi, your brother?" amount="₦5,000" gate />
-            <Row who="You" text="•  •  •  •  (PIN)" mono />
-            <Row who="Kudi" text="Done. ₦5,000 sent to Chidi. Balance ₦245,000." amount="₦245,000" ok />
+          {/* Phone frame with the conversation */}
+          <div className="mx-auto w-full max-w-[330px]">
+            <div className="rounded-[2.4rem] border border-ink/10 bg-naira p-2.5 shadow-2xl shadow-naira/25">
+              <div className="rounded-[1.9rem] bg-paper px-4 pb-6 pt-4">
+                <div className="mb-5 flex items-center gap-2 border-b border-paper-2 pb-3">
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img src="/brand/kudi-mark-t.png" alt="" className="h-6 w-auto" />
+                  <span className="font-display text-sm font-semibold text-naira">Kudi</span>
+                  <span className="ml-auto flex items-center gap-1 text-[11px] text-ink-soft">
+                    <span className="h-1.5 w-1.5 rounded-full bg-emerald" />online
+                  </span>
+                </div>
+                <div className="space-y-4 text-[14px]">
+                  <Row who="You" text="How much I get?" />
+                  <Row who="Kudi" text="You get ₦250,000 and $120." amount="₦250,000" />
+                  <Row who="You" text="Send 5k give my brother" />
+                  <Row who="Kudi" text="Send ₦5,000 to Chidi?" amount="₦5,000" gate />
+                  <Row who="You" text="•  •  •  •" mono />
+                  <Row who="Kudi" text="Sent to Chidi. Balance:" amount="₦245,000" ok />
+                </div>
+              </div>
+            </div>
           </div>
         </div>
       </section>
@@ -133,11 +148,10 @@ export default function Home() {
       {/* Languages */}
       <section className="mx-auto max-w-4xl px-5 py-16">
         <h2 className="font-display text-3xl font-semibold text-naira">In your own language</h2>
-        <div className="mt-6 flex flex-wrap gap-3">
-          <span className="rounded-full border border-naira px-4 py-1.5 text-sm font-medium text-naira">English</span>
-          <span className="rounded-full border border-brass bg-brass/10 px-4 py-1.5 text-sm font-medium text-brass">Nigerian Pidgin</span>
-        </div>
-        <div className="mt-6 grid gap-4 md:grid-cols-2">
+        <p className="mt-3 max-w-xl text-lg text-ink-soft">
+          Kudi understands English and Nigerian Pidgin, and answers the way you spoke to it.
+        </p>
+        <div className="mt-8 grid gap-4 md:grid-cols-2">
           <Quote lang="English" text="“What’s my balance?” → “Your balance is ₦250,000 and $120.”" />
           <Quote lang="Pidgin" text="“How much I get?” → “You get ₦250,000 and $120.”" />
         </div>
@@ -147,14 +161,14 @@ export default function Home() {
       <section className="border-t border-paper-2 bg-paper-2/40">
         <div className="mx-auto max-w-5xl px-5 py-16">
           <h2 className="font-display text-3xl font-semibold text-naira">The team</h2>
-          <p className="mt-2 text-ink-soft">Fintech Disruptors · NITHUB Innovation Fair 2026</p>
+          <p className="mt-2 text-ink-soft">The people building Kudi.</p>
           <div className="mt-8 grid gap-6 sm:grid-cols-3">
             {TEAM.map((m, i) => (
               <figure key={i} className="text-center">
                 <div className="mx-auto aspect-square w-full max-w-[200px] overflow-hidden rounded-2xl border border-paper-2 bg-white">
                   {m.photo ? (
                     // eslint-disable-next-line @next/next/no-img-element
-                    <img src={m.photo} alt={m.name} className="h-full w-full object-cover" />
+                    <img src={m.photo} alt={m.name} className="h-full w-full object-cover object-top" />
                   ) : (
                     <div className="flex h-full w-full items-center justify-center font-display text-4xl text-naira/30">
                       {m.name.charAt(0)}
@@ -164,6 +178,14 @@ export default function Home() {
                 <figcaption className="mt-3">
                   <div className="font-display font-semibold text-ink">{m.name}</div>
                   <div className="text-sm text-ink-soft">{m.role}</div>
+                  <a
+                    href={m.github}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="mt-1 inline-block text-xs text-naira underline decoration-brass/50 underline-offset-2 hover:text-brass"
+                  >
+                    {m.github.replace("https://github.com/", "@")}
+                  </a>
                 </figcaption>
               </figure>
             ))}
@@ -178,9 +200,9 @@ export default function Home() {
           <TelegramButton label="Talk to Kudi" />
         </div>
         <p className="mx-auto mt-8 max-w-md text-sm text-ink-soft">
-          Sandbox demo — no real funds move. Built on the BMONI platform for the NITHUB Innovation
-          Fair 2026.
+          Money anyone can use, just by talking — in your own language.
         </p>
+        <p className="mx-auto mt-2 text-xs text-ink-soft/70">© 2026 Kudi</p>
       </footer>
     </main>
   );

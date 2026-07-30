@@ -20,6 +20,46 @@ export function provisionAccount(sessionId: string): Promise<BmoniAccount> {
 }
 
 /**
+ * Create a BMONI account using the DETAILS THE USER GAVE (name, email, phone) —
+ * the proper sign-up order. Creates the user + CNGN wallet and caches the ids.
+ * Idempotent per session.
+ */
+export async function createBmoniAccount(
+  sessionId: string,
+  details: { fullName: string; email: string; phone: string },
+  client: BmoniClient = clientFromEnv(),
+): Promise<BmoniAccount> {
+  const store = getStore();
+  const existing = await store.getBmoniAccount(sessionId);
+  if (existing) return existing;
+
+  const owner = deriveOwnerAccount(sessionId);
+  const firstName = details.fullName.trim().split(/\s+/)[0] || "Kudi";
+
+  const user = await client.createUser({ firstName, email: details.email, phoneNumber: details.phone });
+  const challenge = await client.ownerProofChallenge(user.bmoniUserId, "CNGN", owner.address);
+  const signature = await owner.signMessage({ message: challenge.message });
+  const wallet = await client.createManagedWallet(
+    user.bmoniUserId,
+    "CNGN",
+    owner.address,
+    challenge.challengeId,
+    signature,
+  );
+
+  const account: BmoniAccount = {
+    bmoniUserId: user.bmoniUserId,
+    smartWalletId: wallet.id,
+    walletAddress: wallet.walletAddress,
+    phoneNumber: details.phone,
+    kycActive: false,
+  };
+  await store.saveBmoniAccount(sessionId, account);
+  log("info", "bmoni.account_created", { sessionId, walletAddress: account.walletAddress });
+  return account;
+}
+
+/**
  * Ensure the session has a BMONI user + CNGN smart wallet + activated NGN rail
  * (KYC), creating them once and caching the (non-secret) ids in the Store.
  * Idempotent. The owner key is derived, never stored.
@@ -99,6 +139,29 @@ export async function uploadKycSelfie(sessionId: string, bytes: Uint8Array, mime
     { bytes, filename: "selfie.jpg", mime: mime || "image/jpeg" },
     { type: "selfie" },
   );
+}
+
+/** Get a crypto deposit address (USDC on Base) to receive into the wallet. */
+export async function getReceiveAddress(
+  sessionId: string,
+  client: BmoniClient = clientFromEnv(),
+): Promise<{ address?: string; walletAddress: string }> {
+  const account = await acct(sessionId);
+  const res = await client.createDepositAddress(account.bmoniUserId, account.smartWalletId, "Base", "USDC");
+  return { address: res.address, walletAddress: account.walletAddress };
+}
+
+/** Close the account: delete the user at the provider and clear the session. */
+export async function deleteAccount(sessionId: string, client: BmoniClient = clientFromEnv()): Promise<void> {
+  const account = await getStore().getBmoniAccount(sessionId);
+  if (account) {
+    try {
+      await client.deleteUser(account.bmoniUserId);
+    } catch (e) {
+      log("warn", "bmoni.delete_failed", { sessionId, detail: String(e).slice(0, 120) });
+    }
+  }
+  await getStore().reset(sessionId);
 }
 
 /** Finalise KYC: activate the profile. Returns whether it activated. */

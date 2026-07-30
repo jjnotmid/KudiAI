@@ -187,6 +187,21 @@ export class BmoniClient {
     return this.req("GET", `/v1/users/${userId}/smart-wallets/account/balances`);
   }
 
+  /** Create a crypto deposit address to receive USDC into the smart wallet. */
+  async createDepositAddress(
+    userId: string,
+    smartWalletId: string,
+    chain: string,
+    currency: string,
+  ): Promise<{ address?: string; chain?: string; currency?: string }> {
+    return this.req("POST", `/v1/users/${userId}/deposit/wallet`, { smartWalletId, chain, currency });
+  }
+
+  /** Permanently delete a user (close account). */
+  async deleteUser(userId: string): Promise<{ success?: boolean }> {
+    return this.req("DELETE", `/v1/users/${userId}`);
+  }
+
   async getNigerianBanks(userId: string): Promise<NigerianBank[]> {
     const r = await this.req<{ banks: NigerianBank[] }>(
       "GET",

@@ -1,10 +1,11 @@
-import { randomUUID } from "node:crypto";
+import { randomInt, randomUUID } from "node:crypto";
 import { createConfirmation, peekConfirmation, verifyConfirmation } from "@/lib/agent/confirm";
+import { sendVerificationEmail } from "@/lib/email";
 import { hashPin, isValidPinFormat, resolvePinSetup, verifyPin } from "@/lib/agent/pin";
 import { runAgent } from "@/lib/agent/run";
 import { getLiveMoneyProvider, getMoneyProvider } from "@/lib/bmoni";
 import { parseTransferDraft } from "@/lib/bmoni/banks";
-import { finalizeKyc, provisionAccount, SANDBOX_BVN, submitKycProfile, uploadKycSelfie } from "@/lib/bmoni/onboard";
+import { createBmoniAccount, deleteAccount, finalizeKyc, getReceiveAddress, submitKycProfile, uploadKycSelfie } from "@/lib/bmoni/onboard";
 import { formatMoney } from "@/lib/money/format";
 import { parseAmount } from "@/lib/money/parse";
 import { money, type Money } from "@/lib/money/types";
@@ -47,10 +48,27 @@ type Flow =
   | { kind: "set_pin"; pendingPin?: string }
   | { kind: "pin_for"; ref: string; tries: number }
   | { kind: "await_bank_transfer"; draft: TransferDraft }
-  | { kind: "kyc_name" }
-  | { kind: "kyc_dob"; fullName: string }
-  | { kind: "kyc_bvn"; fullName: string; dob: string }
-  | { kind: "kyc_selfie" };
+  | { kind: "su_name" }
+  | { kind: "su_email"; fullName: string }
+  | { kind: "su_email_code"; fullName: string; email: string; code: string }
+  | { kind: "su_phone"; fullName: string; email: string }
+  | { kind: "su_dob"; fullName: string }
+  | { kind: "su_bvn"; fullName: string; dob: string }
+  | { kind: "kyc_selfie" }
+  | { kind: "confirm_delete" };
+
+function code6(): string {
+  return String(randomInt(100000, 1000000));
+}
+
+function normalizePhone(raw: string): string | null {
+  const d = raw.replace(/[^\d+]/g, "");
+  if (/^\+234\d{10}$/.test(d)) return d;
+  if (/^234\d{10}$/.test(d)) return `+${d}`;
+  if (/^0\d{10}$/.test(d)) return `+234${d.slice(1)}`;
+  if (/^\+\d{11,15}$/.test(d)) return d;
+  return null;
+}
 const flow = new Map<string, Flow>();
 
 /** Pending confirmations: ref → token (Telegram callback_data is ≤64 bytes). */
@@ -86,6 +104,25 @@ export async function handleMessage(channel: Channel, msg: IncomingMessage): Pro
   }
 
   const state = flow.get(sessionId);
+  log("info", "msg.in", { sessionId, text: text.slice(0, 60), flow: state?.kind ?? "none", voice: msg.fromVoice });
+
+  // /start (Telegram sends this automatically on first open) → clean entry.
+  if (lower === "/start" || lower === "/start@kudiai_bot") {
+    flow.delete(sessionId);
+    const pin0 = await store.getPinHash(sessionId);
+    const acc0 = await store.getBmoniAccount(sessionId);
+    if (pin0) {
+      await channel.send({ chatId: msg.chatId, text: "Welcome back to Kudi 👋 Wetin you wan do?", buttons: QUICK_BUTTONS });
+    } else if (!acc0) {
+      await ev(sessionId, { kind: "onboarding_start" });
+      flow.set(sessionId, { kind: "su_name" });
+      await channel.send({ chatId: msg.chatId, text: "Welcome to Kudi 👋 I be your money assistant. Let's open your account — first, wetin be your full name?" });
+    } else {
+      flow.set(sessionId, { kind: "set_pin" });
+      await channel.send({ chatId: msg.chatId, text: "Let's finish setting up — send a 4-digit PIN (I go ask you to confirm it)." });
+    }
+    return;
+  }
 
   const startsTransferFlow = /^(send money|send|transfer money|transfer|pay money|pay)$/i.test(lower);
   if (startsTransferFlow && !state?.kind) {
@@ -152,56 +189,137 @@ export async function handleMessage(channel: Channel, msg: IncomingMessage): Pro
     return;
   }
 
-  if (state?.kind === "kyc_name") {
-    if (lower === "cancel") {
-      flow.set(sessionId, { kind: "set_pin" });
-      await channel.send({ chatId: msg.chatId, text: "No wahala, we go verify later. For now set your 4-digit PIN — send me 4 digits." });
-      return;
+  if (state?.kind === "confirm_delete") {
+    if (text.trim().toUpperCase() === "DELETE") {
+      await deleteAccount(sessionId);
+      flow.delete(sessionId);
+      await ev(sessionId, { kind: "account_closed", flagged: true });
+      await channel.send({ chatId: msg.chatId, text: "Your account don close and your details deleted. Anytime you wan come back, just send hi. 👋" });
+    } else {
+      flow.delete(sessionId);
+      await channel.send({ chatId: msg.chatId, text: "Okay, I no delete anything — your account dey safe.", buttons: QUICK_BUTTONS });
     }
+    return;
+  }
+
+  // ── "back": step to the previous sign-up prompt to fix a mistake ─────
+  if (state && lower === "back" && state.kind.startsWith("su_")) {
+    switch (state.kind) {
+      case "su_email":
+        flow.set(sessionId, { kind: "su_name" });
+        await channel.send({ chatId: msg.chatId, text: "Okay — wetin be your full name?" });
+        return;
+      case "su_email_code":
+        flow.set(sessionId, { kind: "su_email", fullName: state.fullName });
+        await channel.send({ chatId: msg.chatId, text: "Okay — send your email address again." });
+        return;
+      case "su_phone":
+        flow.set(sessionId, { kind: "su_email", fullName: state.fullName });
+        await channel.send({ chatId: msg.chatId, text: "Okay — send your email address again." });
+        return;
+      case "su_bvn":
+        flow.set(sessionId, { kind: "su_dob", fullName: state.fullName });
+        await channel.send({ chatId: msg.chatId, text: "Okay — send your date of birth again (YYYY-MM-DD)." });
+        return;
+      default:
+        await channel.send({ chatId: msg.chatId, text: "This na the first step — just continue." });
+        return;
+    }
+  }
+
+  // ── Sign-up: collect details, then create the account with them ──────
+  if (state?.kind === "su_name") {
     if (text.trim().length < 2) {
       await channel.send({ chatId: msg.chatId, text: "Tell me your full name, e.g. Ada Okafor." });
       return;
     }
-    flow.set(sessionId, { kind: "kyc_dob", fullName: text.trim() });
-    await channel.send({ chatId: msg.chatId, text: "Your date of birth? Format YYYY-MM-DD (e.g. 1995-06-20)." });
+    flow.set(sessionId, { kind: "su_email", fullName: text.trim() });
+    await channel.send({ chatId: msg.chatId, text: "Nice to meet you. Wetin be your email address?" });
     return;
   }
-  if (state?.kind === "kyc_dob") {
+  if (state?.kind === "su_email") {
+    const email = text.trim();
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
+      await channel.send({ chatId: msg.chatId, text: "Send a correct email, e.g. name@email.com." });
+      return;
+    }
+    const c = code6();
+    const sent = await sendVerificationEmail(email, state.fullName, c);
+    if (sent) {
+      flow.set(sessionId, { kind: "su_email_code", fullName: state.fullName, email, code: c });
+      await channel.send({ chatId: msg.chatId, text: `I don send a 6-digit code to <b>${email}</b>. Enter am here to confirm your email.` });
+    } else {
+      flow.set(sessionId, { kind: "su_phone", fullName: state.fullName, email });
+      await channel.send({ chatId: msg.chatId, text: "Now your phone number? e.g. 08012345678" });
+    }
+    return;
+  }
+  if (state?.kind === "su_email_code") {
+    if (text.replace(/\D/g, "") !== state.code) {
+      await channel.send({ chatId: msg.chatId, text: "That code no correct. Check your email and enter am again." });
+      return;
+    }
+    await ev(sessionId, { kind: "email_verified" });
+    flow.set(sessionId, { kind: "su_phone", fullName: state.fullName, email: state.email });
+    await channel.send({ chatId: msg.chatId, text: "Email confirmed ✅. Now your phone number? e.g. 08012345678" });
+    return;
+  }
+  if (state?.kind === "su_phone") {
+    const phone = normalizePhone(text);
+    if (!phone) {
+      await channel.send({ chatId: msg.chatId, text: "Send a valid Nigerian number, e.g. 08012345678 or +2348012345678." });
+      return;
+    }
+    await channel.send({ chatId: msg.chatId, text: "Creating your account…" });
+    try {
+      const acct = await createBmoniAccount(sessionId, { fullName: state.fullName, email: state.email, phone });
+      await ev(sessionId, { kind: "account_created" });
+      flow.set(sessionId, { kind: "su_dob", fullName: state.fullName });
+      await channel.send({
+        chatId: msg.chatId,
+        text:
+          `✅ Account created for <b>${state.fullName}</b>.\n\n` +
+          `Your wallet address:\n<code>${acct.walletAddress}</code>\n\n` +
+          "Now to verify your identity — wetin be your date of birth? (YYYY-MM-DD)",
+      });
+    } catch (e) {
+      log("error", "signup.create_failed", { sessionId, detail: String(e) });
+      flow.set(sessionId, { kind: "su_phone", fullName: state.fullName, email: state.email });
+      await channel.send({ chatId: msg.chatId, text: "Account creation get small wahala. Send your phone number make we try again." });
+    }
+    return;
+  }
+  if (state?.kind === "su_dob") {
     const dob = text.trim();
     if (!/^\d{4}-\d{2}-\d{2}$/.test(dob)) {
       await channel.send({ chatId: msg.chatId, text: "Send your date of birth like 1995-06-20." });
       return;
     }
-    flow.set(sessionId, { kind: "kyc_bvn", fullName: state.fullName, dob });
-    await channel.send({ chatId: msg.chatId, text: `Your 11-digit BVN? (For the sandbox you fit use ${SANDBOX_BVN}.)` });
+    flow.set(sessionId, { kind: "su_bvn", fullName: state.fullName, dob });
+    await channel.send({ chatId: msg.chatId, text: "Enter your 11-digit BVN to verify your identity." });
     return;
   }
-  if (state?.kind === "kyc_bvn") {
+  if (state?.kind === "su_bvn") {
     await channel.deleteMessage?.(msg.chatId, msg.messageId);
     const bvn = text.replace(/\D/g, "");
     if (bvn.length !== 11) {
-      await channel.send({ chatId: msg.chatId, text: `BVN na 11 digits. Sandbox: ${SANDBOX_BVN}.` });
+      await channel.send({ chatId: msg.chatId, text: "Your BVN must be exactly 11 digits. Try again." });
       return;
     }
-    await channel.send({ chatId: msg.chatId, text: "Checking your details…" });
+    await channel.send({ chatId: msg.chatId, text: "Checking your BVN…" });
     try {
       await submitKycProfile(sessionId, { fullName: state.fullName, dob: state.dob, bvn });
       await ev(sessionId, { kind: "kyc_profile_submitted" });
       flow.set(sessionId, { kind: "kyc_selfie" });
-      await channel.send({ chatId: msg.chatId, text: "Good. Now send a selfie 🤳 — a clear photo of your face for verification." });
+      await channel.send({ chatId: msg.chatId, text: "Almost done. Send a selfie 🤳 — a clear photo of your face — so we know na really you." });
     } catch (e) {
       log("error", "kyc.profile_failed", { sessionId, detail: String(e) });
-      await channel.send({ chatId: msg.chatId, text: "That one no work. Check your BVN and send am again, or type cancel." });
+      await channel.send({ chatId: msg.chatId, text: "That BVN no verify. Check am and send again." });
     }
     return;
   }
   if (state?.kind === "kyc_selfie") {
-    if (lower === "cancel") {
-      flow.set(sessionId, { kind: "set_pin" });
-      await channel.send({ chatId: msg.chatId, text: "Okay, set your PIN — send me 4 digits." });
-      return;
-    }
-    await channel.send({ chatId: msg.chatId, text: "Send a selfie photo 🤳 (tap the camera) to finish verification, or type cancel." });
+    await channel.send({ chatId: msg.chatId, text: "Send a selfie photo 🤳 (tap the camera icon) to finish verification." });
     return;
   }
 
@@ -274,30 +392,20 @@ export async function handleMessage(channel: Channel, msg: IncomingMessage): Pro
 
   const pinHash = await store.getPinHash(sessionId);
   if (!pinHash) {
-    await ev(sessionId, { kind: "onboarding_start" });
-    await channel.send({ chatId: msg.chatId, text: "Welcome to Kudi 👋 I dey open your account for you… hold on small." });
-    try {
-      const acct = await provisionAccount(sessionId);
-      await ev(sessionId, { kind: "account_created" });
+    const account = await store.getBmoniAccount(sessionId);
+    if (!account) {
+      // Brand-new user → start sign-up. No account/wallet created yet, no buttons.
+      await ev(sessionId, { kind: "onboarding_start" });
+      flow.set(sessionId, { kind: "su_name" });
       await channel.send({
         chatId: msg.chatId,
-        text:
-          "✅ Your Kudi wallet is created.\n" +
-          `Wallet: <code>${acct.walletAddress.slice(0, 8)}…${acct.walletAddress.slice(-4)}</code>\n` +
-          (acct.phoneNumber ? `Account phone (give this to BMONI to fund your wallet): <code>${acct.phoneNumber}</code>\n` : "") +
-          "\nNow let's verify you (KYC). Wetin be your full name?",
-        buttons: QUICK_BUTTONS,
+        text: "Welcome to Kudi 👋 I be your money assistant. Let's open your account — first, wetin be your full name?",
       });
-      flow.set(sessionId, { kind: "kyc_name" });
-    } catch (e) {
-      log("error", "onboarding.provision_failed", { sessionId, detail: String(e) });
-      await channel.send({
-        chatId: msg.chatId,
-        text: "Welcome to Kudi 👋 Let's start — set a 4-digit transfer PIN. Send me any 4 digits (e.g. 1234).",
-        buttons: QUICK_BUTTONS,
-      });
-      flow.set(sessionId, { kind: "set_pin" });
+      return;
     }
+    // Account + KYC done but no PIN yet → set the transaction PIN.
+    flow.set(sessionId, { kind: "set_pin" });
+    await channel.send({ chatId: msg.chatId, text: "Last step — set a 4-digit transfer PIN. Send me 4 digits (I go ask you to confirm it)." });
     return;
   }
 
@@ -430,7 +538,7 @@ export async function handlePhoto(
   const state = flow.get(sessionId);
 
   if (state?.kind === "kyc_selfie") {
-    await channel.send({ chatId: msg.chatId, text: "Got your selfie — verifying your face with BMONI… 🔍" });
+    await channel.send({ chatId: msg.chatId, text: "Got your selfie — verifying your face… 🔍" });
     let uploaded = false;
     try {
       await uploadKycSelfie(sessionId, bytes, mime);
@@ -569,7 +677,7 @@ function transferReceipt(r: { id: string; amount: Money; beneficiaryName: string
     "Status: Completed",
     `New balance: ${formatMoney(r.balanceAfter)}`,
     "",
-    "<i>Proof of payment · Kudi (sandbox)</i>",
+    "<i>Kudi · Proof of payment</i>",
   ].join("\n");
 }
 function conversionReceipt(r: { id: string; from: Money; to: Money; rateDisplay: string; createdAt: string }): string {
@@ -581,7 +689,7 @@ function conversionReceipt(r: { id: string; from: Money; to: Money; rateDisplay:
     `Ref: <code>${refOf(r.id)}</code>`,
     `Date: ${whenOf(r.createdAt)}`,
     "",
-    "<i>Proof of payment · Kudi (sandbox)</i>",
+    "<i>Kudi · Proof of payment</i>",
   ].join("\n");
 }
 
@@ -598,24 +706,62 @@ async function tryHandleLocalIntent(channel: Channel, sessionId: string, chatId:
   const lower = text.toLowerCase();
   const provider = getMoneyProvider();
 
-  if (/balance|bal/i.test(lower)) {
+  if (
+    /\bbalance\b|\bbal\b|how much (i|we|dey|money|remain)|how much i get|wetin dey (my |the )?account|wetin i get|wetin dey inside|my money|how far (my )?account|check.*(balance|account)|money wey dey/i.test(
+      lower,
+    )
+  ) {
     const res = await provider.getBalances({ sessionId });
     if (!res.ok) {
       await channel.send({ chatId, text: res.error.userMessage });
       return true;
     }
     const lines = res.data.map((b) => `${b.currency}: ${formatMoney(b.available)}`).join("\n");
-    await channel.send({ chatId, text: `Your balances:\n${lines}` });
+    await channel.send({ chatId, text: `💰 Your balance:\n${lines}` });
     return true;
   }
 
   if (/card|virtual/i.test(lower)) {
-    const res = await provider.createVirtualCard({ sessionId }, { currency: "NGN", label: "My card" });
+    const res = await provider.createVirtualCard({ sessionId }, { currency: "NGN", label: "Kudi card" });
     if (!res.ok) {
       await channel.send({ chatId, text: res.error.userMessage });
       return true;
     }
-    await channel.send({ chatId, text: `Card ready ✅\nLast4: ${res.data.last4}\nBrand: ${res.data.brand}` });
+    const c = res.data;
+    const num = c.pan.replace(/(.{4})/g, "$1 ").trim();
+    const exp = `${String(c.expMonth).padStart(2, "0")}/${String(c.expYear).padStart(2, "0")}`;
+    await channel.send({
+      chatId,
+      text:
+        `💳 <b>Your virtual card is ready</b>\n\n` +
+        `<code>${num}</code>\n` +
+        `Expiry: <b>${exp}</b>   CVV: <b>${c.cvv}</b>\n` +
+        `${c.brand.toUpperCase()} · ${c.currency}\n\n` +
+        `Keep these details private.`,
+    });
+    return true;
+  }
+
+  if (/receive|deposit|crypto|usdc|wallet address|my address|fund/i.test(lower)) {
+    try {
+      const r = await getReceiveAddress(sessionId);
+      await channel.send({
+        chatId,
+        text:
+          `Your Kudi wallet address:\n<code>${r.walletAddress}</code>\n\n` +
+          (r.address
+            ? `To receive USDC (Base network), send to:\n<code>${r.address}</code>`
+            : "Your crypto deposit address dey come up shortly."),
+      });
+    } catch {
+      await channel.send({ chatId, text: "I couldn't fetch your deposit address just now. Try again." });
+    }
+    return true;
+  }
+
+  if (/delete.*account|close.*account|remove my account|delete my account/i.test(lower)) {
+    flow.set(sessionId, { kind: "confirm_delete" });
+    await channel.send({ chatId, text: "You wan close your account? This go delete all your details. Reply <b>DELETE</b> to confirm, or anything else to cancel." });
     return true;
   }
 

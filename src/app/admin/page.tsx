@@ -34,19 +34,17 @@ export default async function AdminDashboard() {
         <div className="mx-auto flex max-w-6xl items-center justify-between px-5 py-4">
           <div className="flex items-center gap-3">
             {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img src="/brand/kudi-mark.png" alt="Kudi" className="h-7 w-auto brightness-0 invert" />
-            <span className="font-display text-lg font-semibold">Operations</span>
+            <img src="/brand/kudi-mark-t.png" alt="Kudi" className="h-9 w-auto brightness-0 invert" />
+            <span className="font-display text-lg font-semibold">Kudi Operations</span>
           </div>
-          <span className="text-sm text-paper/70">Fintech Disruptors · NITHUB 2026</span>
+          <span className="text-sm text-paper/70">Admin console</span>
         </div>
       </header>
 
       <div className="mx-auto max-w-6xl px-5 py-8">
         {!kpis.configured ? (
           <div className="mb-6 rounded-xl border border-brass/40 bg-brass/10 p-4 text-sm text-ink">
-            Supabase isn’t configured, so this dashboard has no data yet. Apply
-            <code className="mx-1 rounded bg-paper-2 px-1">src/lib/store/schema.sql</code>
-            and set <code className="mx-1 rounded bg-paper-2 px-1">STORE=supabase</code>.
+            Live data will appear here as users interact with Kudi.
           </div>
         ) : null}
 
@@ -90,7 +88,7 @@ export default async function AdminDashboard() {
             <Empty text="No users onboarded yet." />
           ) : (
             <Table
-              head={["Session", "BMONI user", "Wallet address", "Joined"]}
+              head={["User", "Account ID", "Wallet address", "Joined"]}
               rows={users.map((u) => [
                 shortSession(u.session_id),
                 u.bmoni_user_id.slice(0, 8),

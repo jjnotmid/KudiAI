@@ -110,5 +110,7 @@ export class SupabaseStore implements Store {
   async reset(sessionId: string): Promise<void> {
     await this.db.from("kudi_turns").delete().eq("session_id", sessionId);
     await this.db.from("kudi_nonces").delete().eq("session_id", sessionId);
+    await this.db.from("kudi_bmoni_accounts").delete().eq("session_id", sessionId);
+    await this.db.from("kudi_pins").delete().eq("session_id", sessionId);
   }
 }
