@@ -11,13 +11,28 @@ export const maxDuration = 60;
  */
 export async function GET(): Promise<Response> {
   const t = Date.now();
+  const base = process.env.BMONI_BASE_URL ?? "";
+  // Reveal the EXACT stored value (quoted → shows trailing whitespace/newlines).
+  let envFetch: unknown;
+  try {
+    const r = await fetch(`${base}/v1/users`, {
+      method: "POST",
+      headers: { "x-api-key": process.env.BMONI_API_KEY ?? "", "content-type": "application/json" },
+      body: JSON.stringify({ firstName: "EnvPing", email: `envping.${Date.now()}@example.com`, phoneNumber: `+2349${String(Date.now()).slice(-9)}` }),
+    });
+    envFetch = { ok: true, status: r.status };
+  } catch (e) {
+    const c = (e as { cause?: { code?: string } }).cause;
+    envFetch = { ok: false, error: String((e as Error).message), code: c?.code ?? null };
+  }
+  const baseUrlRaw = JSON.stringify(base);
   try {
     const res = await fetch("https://embedded-dev.bmoni.com/v1/users", {
       method: "POST",
       headers: { "x-api-key": process.env.BMONI_API_KEY ?? "", "content-type": "application/json" },
       body: JSON.stringify({ firstName: "Ping", email: `ping.${Date.now()}@example.com`, phoneNumber: `+2348${String(Date.now()).slice(-9)}` }),
     });
-    return NextResponse.json({ ok: true, ms: Date.now() - t, status: res.status, body: (await res.text()).slice(0, 200) });
+    return NextResponse.json({ ok: true, ms: Date.now() - t, baseUrlRaw, envFetch, hardcodedStatus: res.status });
   } catch (e) {
     const err = e as { message?: string; cause?: unknown };
     const cause = err.cause as { code?: string; message?: string; errno?: number } | undefined;
