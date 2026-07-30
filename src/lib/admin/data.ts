@@ -73,7 +73,29 @@ export async function getRecentEvents(limit = 40): Promise<AdminEvent[]> {
   const db = client();
   if (!db) return [];
   try {
-    const { data } = await db.from("kudi_events").select("*").order("created_at", { ascending: false }).limit(limit);
+    const { data } = await db
+      .from("kudi_events")
+      .select("*")
+      .neq("kind", "api_call")
+      .order("created_at", { ascending: false })
+      .limit(limit);
+    return (data ?? []) as AdminEvent[];
+  } catch {
+    return [];
+  }
+}
+
+/** Live BMONI API calls — proof the platform runs on the real sandbox API. */
+export async function getApiCalls(limit = 30): Promise<AdminEvent[]> {
+  const db = client();
+  if (!db) return [];
+  try {
+    const { data } = await db
+      .from("kudi_events")
+      .select("*")
+      .eq("kind", "api_call")
+      .order("created_at", { ascending: false })
+      .limit(limit);
     return (data ?? []) as AdminEvent[];
   } catch {
     return [];

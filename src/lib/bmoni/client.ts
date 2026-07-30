@@ -5,6 +5,19 @@
  * stablecoin codes: CNGN (naira), USDB (USD).
  */
 
+import { getStore } from "@/lib/store";
+
+/** Record a live BMONI API call for the admin "API activity" panel. Best-effort,
+ * fire-and-forget; UUIDs in the path are collapsed to :id for readability. */
+async function logApiCall(method: string, path: string, status: number, ms: number): Promise<void> {
+  try {
+    const clean = path.replace(/[0-9a-f]{8}-[0-9a-f-]{20,}/gi, ":id");
+    await getStore().recordEvent("api", { kind: "api_call", detail: { method, path: clean, status, ms } });
+  } catch {
+    /* logging must never affect the call */
+  }
+}
+
 export type BmoniStableCurrency = "CNGN" | "USDB";
 
 export interface BmoniUser {
@@ -62,19 +75,26 @@ export class BmoniClient {
   ) {}
 
   private async req<T>(method: string, path: string, body?: unknown): Promise<T> {
-    const res = await fetch(`${this.baseUrl}${path}`, {
-      method,
-      headers: { "x-api-key": this.apiKey, "content-type": "application/json" },
-      body: body === undefined ? undefined : JSON.stringify(body),
-    });
-    let json: unknown = null;
+    const started = Date.now();
+    let status = 0;
     try {
-      json = await res.json();
-    } catch {
-      /* non-JSON */
+      const res = await fetch(`${this.baseUrl}${path}`, {
+        method,
+        headers: { "x-api-key": this.apiKey, "content-type": "application/json" },
+        body: body === undefined ? undefined : JSON.stringify(body),
+      });
+      status = res.status;
+      let json: unknown = null;
+      try {
+        json = await res.json();
+      } catch {
+        /* non-JSON */
+      }
+      if (!res.ok) throw new BmoniHttpError(res.status, json);
+      return json as T;
+    } finally {
+      void logApiCall(method, path, status, Date.now() - started);
     }
-    if (!res.ok) throw new BmoniHttpError(res.status, json);
-    return json as T;
   }
 
   private async reqWithBodyVariants<T>(method: string, path: string, candidates: readonly unknown[]): Promise<T> {
@@ -236,6 +256,23 @@ export class BmoniClient {
     if (currency === "CNGN") return "NGN";
     if (currency === "USDB") return "USD";
     return currency;
+  }
+
+  /** Live BMONI exchange rate (units of `to` per 1 unit of `from`'s counterpart).
+   * Confirmed live: POST …/exchange/convert { amount, from, to } → { exchangeRate }.
+   * Returns 0 if unavailable so the caller can fall back. */
+  async getExchangeRate(userId: string, from: "NGN" | "USD", to: "NGN" | "USD", amount: number): Promise<number> {
+    try {
+      const r = await this.req<{ exchangeRate?: string }>("POST", `/v1/users/${userId}/exchange/convert`, {
+        amount: amount > 0 ? amount : 1,
+        from,
+        to,
+      });
+      const rate = Number.parseFloat(String(r.exchangeRate ?? "0"));
+      return Number.isFinite(rate) && rate > 0 ? rate : 0;
+    } catch {
+      return 0;
+    }
   }
 
   async verifyNigerianAccount(

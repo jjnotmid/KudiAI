@@ -1169,18 +1169,24 @@ async function startConvert(
   to: "NGN" | "USD",
   amount: Money,
 ): Promise<void> {
-  const bal = await getMoneyProvider().getBalances({ sessionId });
+  const provider = getMoneyProvider();
+  const bal = await provider.getBalances({ sessionId });
   const avail = bal.ok ? (bal.data.find((b) => b.currency === from)?.available.minor ?? 0) : 0;
   if (avail < amount.minor) {
     await channel.send({ chatId, text: `You no get enough ${from} to convert. You get ${formatMoney(money(avail, from))}.` });
     return;
   }
+  // Fetch a live quote so the user sees the rate + what they'll receive first.
+  const quote = await provider.convert({ sessionId }, { amount, to, idempotencyKey: randomUUID() });
   const { token } = createConfirmation({ sessionId, action: "convert", amountMinor: amount.minor, currency: from, to });
   const ref = await stashConfirm(token, sessionId);
   await getStore().setFlow(sessionId, { kind: "pin_for", ref, tries: 0 });
+  const quoteLines = quote.ok
+    ? `You send: <b>${formatMoney(amount)}</b>\nYou get: <b>${formatMoney(quote.data.to)}</b>\nRate: ${quote.data.rateDisplay}\nFee: ₦25`
+    : `Change ${formatMoney(amount)} to ${to}`;
   await channel.send({
     chatId,
-    text: `Change ${formatMoney(amount)} to ${to}\n\n🔒 Enter your 4-digit PIN to approve, or type cancel.`,
+    text: `🔁 <b>Currency conversion</b>\n\n${quoteLines}\n\n🔒 Enter your 4-digit PIN to proceed, or tap Cancel.`,
     buttons: [[{ label: "Cancel", data: `cxl:${ref}`, kind: "cancel" }]],
   });
 }

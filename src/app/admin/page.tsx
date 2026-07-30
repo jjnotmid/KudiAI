@@ -1,7 +1,7 @@
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { ADMIN_COOKIE, isValidAdminToken } from "@/lib/admin/auth";
-import { type AdminEvent, getFlaggedEvents, getKpis, getRecentEvents, getUsers } from "@/lib/admin/data";
+import { type AdminEvent, getApiCalls, getFlaggedEvents, getKpis, getRecentEvents, getUsers } from "@/lib/admin/data";
 import { formatMoney } from "@/lib/money/format";
 import { type Currency, isCurrency, money } from "@/lib/money/types";
 
@@ -21,11 +21,12 @@ export default async function AdminDashboard() {
   const jar = await cookies();
   if (!isValidAdminToken(jar.get(ADMIN_COOKIE)?.value)) redirect("/admin/login");
 
-  const [kpis, events, flagged, users] = await Promise.all([
+  const [kpis, events, flagged, users, apiCalls] = await Promise.all([
     getKpis(),
     getRecentEvents(30),
     getFlaggedEvents(20),
     getUsers(30),
+    getApiCalls(30),
   ]);
 
   return (
@@ -79,6 +80,30 @@ export default async function AdminDashboard() {
               head={["Time", "Session", "Event", "Amount"]}
               rows={events.map((e) => [timeOf(e), shortSession(e.session_id), e.kind, amountText(e.amount_minor, e.currency)])}
               flaggedRows={events.map((e) => e.flagged)}
+            />
+          )}
+        </Panel>
+
+        {/* Live BMONI API activity */}
+        <Panel title="Live BMONI API activity" subtitle="Real calls to the BMONI Embedded sandbox — method, endpoint, status, latency">
+          {apiCalls.length === 0 ? (
+            <Empty text="No API calls yet — actions like balance, transfer and convert hit the live BMONI API." />
+          ) : (
+            <Table
+              head={["Time", "Method", "Endpoint", "Status"]}
+              rows={apiCalls.map((e) => {
+                const d = (e.detail ?? {}) as { method?: string; path?: string; status?: number; ms?: number };
+                return [
+                  timeOf(e),
+                  String(d.method ?? "—"),
+                  String(d.path ?? "—"),
+                  `${d.status ?? "—"}${d.ms != null ? ` · ${d.ms}ms` : ""}`,
+                ];
+              })}
+              flaggedRows={apiCalls.map((e) => {
+                const d = (e.detail ?? {}) as { status?: number };
+                return (d.status ?? 0) >= 400;
+              })}
             />
           )}
         </Panel>

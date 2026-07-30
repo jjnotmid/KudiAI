@@ -172,8 +172,15 @@ export async function getReceiveAddress(
   client: BmoniClient = clientFromEnv(),
 ): Promise<{ address?: string; walletAddress: string }> {
   const account = await acct(sessionId);
-  const res = await client.createDepositAddress(account.bmoniUserId, account.smartWalletId, "Base", "USDC");
-  return { address: res.address, walletAddress: account.walletAddress };
+  let address: string | undefined;
+  try {
+    const res = await client.createDepositAddress(account.bmoniUserId, account.smartWalletId, "Base", "USDC");
+    address = res.address;
+  } catch {
+    // The dedicated deposit-address rail may be unavailable; the smart-wallet
+    // address below is a real on-chain address that can still receive USDC.
+  }
+  return { address: address ?? account.walletAddress, walletAddress: account.walletAddress };
 }
 
 /** Close the account: delete the user at the provider and clear the session. */

@@ -114,7 +114,14 @@ export class BmoniLiveProvider implements MoneyProvider {
 
     const ngnRow = res.balances.find((r) => (r.currency === "NGN" || r.currency === "CNGN") && r.error === null);
     const bmoniNgn = Math.round((Number.parseFloat(ngnRow?.balance || "0") || 0) * 100);
-    return { ngnAvail: Math.max(0, bmoniNgn - spentMinor + ngnConvDelta), usdMinor: Math.max(0, usdMinor), hasUsdAccount };
+    // Real USD/USDB balance on BMONI (e.g. a USDC crypto deposit) adds to conversions.
+    const usdRow = res.balances.find((r) => (r.currency === "USD" || r.currency === "USDB") && r.error === null);
+    const bmoniUsd = Math.round((Number.parseFloat(usdRow?.balance || "0") || 0) * 100);
+    return {
+      ngnAvail: Math.max(0, bmoniNgn - spentMinor + ngnConvDelta),
+      usdMinor: Math.max(0, usdMinor + bmoniUsd),
+      hasUsdAccount: hasUsdAccount || bmoniUsd > 0,
+    };
   }
 
   async getBalances(ctx: Ctx): Promise<Result<Balance[]>> {
@@ -197,18 +204,26 @@ export class BmoniLiveProvider implements MoneyProvider {
       return err("provider_unavailable", "I couldn't reach your wallet just now. Try again.", true);
     }
   }
-  async convert(_ctx: Ctx, input: ConvertInput): Promise<Result<ConversionReceipt>> {
-    // Quote at a fixed demo rate (real FX rails are KYC-gated). Exact minor-unit math.
-    const RATE = 1650; // ₦ per $1
-    let toMinor: number;
-    let rateDisplay: string;
-    if (input.amount.currency === "NGN" && input.to === "USD") {
-      toMinor = Math.round((input.amount.minor / 100 / RATE) * 100);
-      rateDisplay = `${formatMoney(fromMajor(RATE, "NGN"))} = ${formatMoney(fromMajor(1, "USD"))}`;
-    } else {
-      toMinor = Math.round((input.amount.minor / 100) * RATE * 100);
-      rateDisplay = `${formatMoney(fromMajor(1, "USD"))} = ${formatMoney(fromMajor(RATE, "NGN"))}`;
+  async convert(ctx: Ctx, input: ConvertInput): Promise<Result<ConversionReceipt>> {
+    // Live BMONI exchange rate (₦ per $1). Falls back to a fixed rate if the
+    // sandbox call is unavailable, so the demo never breaks.
+    const fromMajorAmount = input.amount.minor / 100;
+    let rate = 0;
+    try {
+      const account = await ensureBmoniAccount(ctx.sessionId, this.client);
+      rate = await this.client.getExchangeRate(account.bmoniUserId, input.amount.currency, input.to, fromMajorAmount);
+    } catch (e) {
+      log("warn", "bmoni.exchange_rate_failed", { sessionId: ctx.sessionId, detail: String(e) });
     }
+    if (rate <= 0) rate = 1650; // fallback ₦/$
+
+    let toMinor: number;
+    if (input.amount.currency === "NGN" && input.to === "USD") {
+      toMinor = Math.round((fromMajorAmount / rate) * 100);
+    } else {
+      toMinor = Math.round(fromMajorAmount * rate * 100);
+    }
+    const rateDisplay = `${formatMoney(fromMajor(Math.round(rate), "NGN"))} = ${formatMoney(fromMajor(1, "USD"))}`;
     return ok({
       id: `conv_${Date.now().toString(36)}`,
       from: input.amount,
