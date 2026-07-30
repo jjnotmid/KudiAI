@@ -10,18 +10,23 @@ export const maxDuration = 60;
  * result or the exact error. Remove before final submission.
  */
 export async function GET(): Promise<Response> {
-  const stamp = Date.now();
-  const sid = `debug-${stamp}`;
-  const digits = String(stamp).slice(-9);
   const t = Date.now();
   try {
-    const acct = await createBmoniAccount(sid, {
-      fullName: "Debug User",
-      email: `debug.${stamp}@example.com`,
-      phone: `+2348${digits}`,
+    const res = await fetch("https://embedded-dev.bmoni.com/v1/users", {
+      method: "POST",
+      headers: { "x-api-key": process.env.BMONI_API_KEY ?? "", "content-type": "application/json" },
+      body: JSON.stringify({ firstName: "Ping", email: `ping.${Date.now()}@example.com`, phoneNumber: `+2348${String(Date.now()).slice(-9)}` }),
     });
-    return NextResponse.json({ ok: true, ms: Date.now() - t, wallet: acct.walletAddress });
+    return NextResponse.json({ ok: true, ms: Date.now() - t, status: res.status, body: (await res.text()).slice(0, 200) });
   } catch (e) {
-    return NextResponse.json({ ok: false, ms: Date.now() - t, error: String(e).slice(0, 600) });
+    const err = e as { message?: string; cause?: unknown };
+    const cause = err.cause as { code?: string; message?: string; errno?: number } | undefined;
+    return NextResponse.json({
+      ok: false,
+      ms: Date.now() - t,
+      error: String(err.message ?? e),
+      causeCode: cause?.code ?? null,
+      causeMsg: cause?.message ?? String(cause ?? "").slice(0, 200),
+    });
   }
 }
