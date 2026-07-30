@@ -13,12 +13,13 @@
     "test:contract": "vitest run src/lib/bmoni/__tests__/contract.test.ts",
     "test:watch": "vitest",
     "bot:dev": "tsx scripts/bot-polling.ts",
+    "webhook:set": "tsx scripts/set-webhook.ts",
     "demo:reset": "tsx scripts/demo-reset.ts",
     "verify": "./scripts/verify.sh"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.58.0",
-    "next": "15.5.4",
+    "next": "^15.5.22",
     "react": "19.1.1",
     "react-dom": "19.1.1",
     "viem": "^2.55.10",
@@ -31,7 +32,7 @@
     "@types/react": "19.1.13",
     "@types/react-dom": "19.1.9",
     "eslint": "9.36.0",
-    "eslint-config-next": "15.5.4",
+    "eslint-config-next": "^15.5.22",
     "tailwindcss": "4.1.13",
     "tsx": "4.20.5",
     "typescript": "5.9.2",

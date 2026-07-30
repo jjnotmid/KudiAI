@@ -47,7 +47,7 @@ export default function Home() {
         <div className="relative mx-auto grid max-w-6xl items-center gap-12 px-5 pb-24 pt-10 md:grid-cols-[1.05fr_0.95fr] md:pt-16">
           <div>
             {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img src="/brand/kudi-wordmark-t.png" alt="Kudi AI" className="mb-7 h-24 w-auto md:h-32" />
+            <img src="/brand/kudi-wordmark-t.png" alt="Kudi AI" className="mb-7 h-16 w-auto md:h-20" />
             <h1 className="font-display text-5xl font-bold leading-[1.02] tracking-tight text-naira md:text-[4.25rem] md:leading-[1.0]">
               Talk to your money.
               <br />
@@ -75,13 +75,21 @@ export default function Home() {
                     <span className="h-1.5 w-1.5 rounded-full bg-emerald" />online
                   </span>
                 </div>
-                <div className="space-y-4 text-[14px]">
-                  <Row who="You" text="How much I get?" />
-                  <Row who="Kudi" text="You get ₦250,000 and $120." amount="₦250,000" />
-                  <Row who="You" text="Send 5k give my brother" />
-                  <Row who="Kudi" text="Send ₦5,000 to Chidi?" amount="₦5,000" gate />
-                  <Row who="You" text="•  •  •  •" mono />
-                  <Row who="Kudi" text="Sent to Chidi. Balance:" amount="₦245,000" ok />
+                <div className="space-y-2.5">
+                  <Bubble side="user">How much I get?</Bubble>
+                  <Bubble side="kudi">
+                    You get <b className="tnum">₦250,000</b> and <b className="tnum">$120</b>.
+                  </Bubble>
+                  <Bubble side="user">Send 5k give my brother</Bubble>
+                  <Bubble side="kudi">
+                    Send <b className="tnum">₦5,000</b> to Chidi? Enter your PIN to approve.
+                  </Bubble>
+                  <Bubble side="user">
+                    <span className="tnum tracking-[0.3em]">••••</span>
+                  </Bubble>
+                  <Bubble side="kudi" ok>
+                    ✅ Sent to Chidi. New balance <b className="tnum">₦245,000</b>.
+                  </Bubble>
                 </div>
               </div>
             </div>
@@ -208,15 +216,21 @@ export default function Home() {
   );
 }
 
-function Row({ who, text, amount, mono, gate, ok }: { who: string; text: string; amount?: string; mono?: boolean; gate?: boolean; ok?: boolean }) {
-  const isKudi = who === "Kudi";
+function Bubble({ side, ok, children }: { side: "user" | "kudi"; ok?: boolean; children: React.ReactNode }) {
+  const isUser = side === "user";
   return (
-    <div className={`flex gap-3 ${isKudi ? "" : "pl-6"}`}>
-      <span className={`w-9 shrink-0 text-xs font-semibold uppercase ${isKudi ? "text-naira" : "text-ink-soft"}`}>{who}</span>
-      <p className={`flex-1 ${mono ? "tnum tracking-[0.3em]" : ""} ${ok ? "text-emerald" : gate ? "text-ink" : "text-ink-soft"}`}>
-        {text}
-        {amount ? <span className="tnum ml-2 font-semibold text-naira">{amount}</span> : null}
-      </p>
+    <div className={`flex ${isUser ? "justify-end" : "justify-start"}`}>
+      <div
+        className={`max-w-[82%] rounded-2xl px-3.5 py-2 text-[13.5px] leading-snug ${
+          isUser
+            ? "rounded-br-sm bg-naira text-paper"
+            : ok
+              ? "rounded-bl-sm border border-emerald/25 bg-emerald/10 text-emerald"
+              : "rounded-bl-sm border border-paper-2 bg-white text-ink"
+        }`}
+      >
+        {children}
+      </div>
     </div>
   );
 }

@@ -12,6 +12,13 @@ export interface BmoniAccount {
   readonly kycActive?: boolean;
 }
 
+/** A pending value-moving confirmation awaiting the user's PIN. */
+export interface PendingConfirmRecord {
+  readonly token: string;
+  readonly sessionId: string;
+  readonly expiresAt: number;
+}
+
 /** Audit/analytics event for the admin dashboard. */
 export interface KudiEvent {
   readonly kind: string;
@@ -36,6 +43,14 @@ export interface Store {
   setPinHash(sessionId: string, pinHash: string): Promise<void>;
   /** Append an audit/analytics event (feeds the admin dashboard). Best-effort. */
   recordEvent(sessionId: string, event: KudiEvent): Promise<void>;
+  /** Conversational flow state (signup step, PIN gate, etc.). Null = no state.
+   * Persisted so the bot can run stateless on serverless (webhook). */
+  getFlow(sessionId: string): Promise<unknown | null>;
+  setFlow(sessionId: string, state: unknown | null): Promise<void>;
+  /** Pending value-moving confirmations, keyed by a short ref. */
+  putPending(ref: string, data: PendingConfirmRecord): Promise<void>;
+  getPending(ref: string): Promise<PendingConfirmRecord | null>;
+  deletePending(ref: string): Promise<void>;
   /** Conversation history for a session (most-recent-last), already capped. */
   loadTurns(sessionId: string): Promise<Turn[]>;
   saveTurns(sessionId: string, turns: readonly Turn[]): Promise<void>;

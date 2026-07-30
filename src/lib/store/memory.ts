@@ -1,5 +1,5 @@
 import type { Turn } from "@/lib/agent/llm";
-import { type BmoniAccount, type KudiEvent, MAX_TURNS, type Store } from "./types";
+import { type BmoniAccount, type KudiEvent, MAX_TURNS, type PendingConfirmRecord, type Store } from "./types";
 
 /** In-memory Store. Process-local; fine for dev, tests and a polling demo. */
 export class MemoryStore implements Store {
@@ -29,6 +29,25 @@ export class MemoryStore implements Store {
   async recordEvent(sessionId: string, event: KudiEvent): Promise<void> {
     this.events.push({ ...event, sessionId, at: Date.now() });
     if (this.events.length > 1000) this.events.shift();
+  }
+
+  private readonly flows = new Map<string, unknown>();
+  private readonly pendings = new Map<string, PendingConfirmRecord>();
+  async getFlow(sessionId: string): Promise<unknown | null> {
+    return this.flows.get(sessionId) ?? null;
+  }
+  async setFlow(sessionId: string, state: unknown | null): Promise<void> {
+    if (state === null) this.flows.delete(sessionId);
+    else this.flows.set(sessionId, state);
+  }
+  async putPending(ref: string, data: PendingConfirmRecord): Promise<void> {
+    this.pendings.set(ref, data);
+  }
+  async getPending(ref: string): Promise<PendingConfirmRecord | null> {
+    return this.pendings.get(ref) ?? null;
+  }
+  async deletePending(ref: string): Promise<void> {
+    this.pendings.delete(ref);
   }
 
   async loadTurns(sessionId: string): Promise<Turn[]> {

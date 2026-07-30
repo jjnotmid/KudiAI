@@ -11,7 +11,7 @@ export async function sendEmail(to: string, subject: string, html: string): Prom
     const res = await fetch("https://api.resend.com/emails", {
       method: "POST",
       headers: { authorization: `Bearer ${env.RESEND_API_KEY}`, "content-type": "application/json" },
-      body: JSON.stringify({ from: `Kudi <${env.RESEND_FROM}>`, to: [to], subject, html }),
+      body: JSON.stringify({ from: `Kudi AI <${env.RESEND_FROM}>`, to: [to], subject, html }),
     });
     if (!res.ok) {
       log("warn", "email.send_failed", { status: res.status, detail: (await res.text()).slice(0, 160) });

@@ -52,8 +52,27 @@ create table if not exists public.kudi_events (
 );
 create index if not exists kudi_events_created_idx on public.kudi_events (created_at desc);
 
+-- Conversational flow state per session (signup step, PIN gate, etc.) so the
+-- bot can run stateless on serverless (Telegram webhook on Vercel).
+create table if not exists public.kudi_flow (
+  session_id  text        primary key,
+  state       jsonb       not null,
+  updated_at  timestamptz not null default now()
+);
+
+-- Pending value-moving confirmations, keyed by a short ref (Telegram callback).
+create table if not exists public.kudi_pending (
+  ref         text        primary key,
+  session_id  text        not null,
+  token       text        not null,
+  expires_at  bigint      not null,
+  created_at  timestamptz not null default now()
+);
+
 alter table public.kudi_turns          enable row level security;
 alter table public.kudi_nonces         enable row level security;
 alter table public.kudi_bmoni_accounts enable row level security;
 alter table public.kudi_pins           enable row level security;
 alter table public.kudi_events         enable row level security;
+alter table public.kudi_flow           enable row level security;
+alter table public.kudi_pending        enable row level security;

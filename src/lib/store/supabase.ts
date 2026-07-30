@@ -1,6 +1,6 @@
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import type { Turn } from "@/lib/agent/llm";
-import { type BmoniAccount, type KudiEvent, MAX_TURNS, type Store } from "./types";
+import { type BmoniAccount, type KudiEvent, MAX_TURNS, type PendingConfirmRecord, type Store } from "./types";
 
 /**
  * Supabase-backed Store. Uses the service_role key (server-only). Apply
@@ -60,6 +60,35 @@ export class SupabaseStore implements Store {
       .from("kudi_pins")
       .upsert({ session_id: sessionId, pin_hash: pinHash }, { onConflict: "session_id" });
     if (error) throw new Error(`supabase setPinHash: ${error.message}`);
+  }
+
+  async getFlow(sessionId: string): Promise<unknown | null> {
+    const { data, error } = await this.db.from("kudi_flow").select("state").eq("session_id", sessionId).maybeSingle();
+    if (error) throw new Error(`supabase getFlow: ${error.message}`);
+    return data?.state ?? null;
+  }
+  async setFlow(sessionId: string, state: unknown | null): Promise<void> {
+    if (state === null) {
+      await this.db.from("kudi_flow").delete().eq("session_id", sessionId);
+      return;
+    }
+    const { error } = await this.db.from("kudi_flow").upsert({ session_id: sessionId, state }, { onConflict: "session_id" });
+    if (error) throw new Error(`supabase setFlow: ${error.message}`);
+  }
+  async putPending(ref: string, data: PendingConfirmRecord): Promise<void> {
+    const { error } = await this.db
+      .from("kudi_pending")
+      .insert({ ref, session_id: data.sessionId, token: data.token, expires_at: data.expiresAt });
+    if (error) throw new Error(`supabase putPending: ${error.message}`);
+  }
+  async getPending(ref: string): Promise<PendingConfirmRecord | null> {
+    const { data, error } = await this.db.from("kudi_pending").select("*").eq("ref", ref).maybeSingle();
+    if (error) throw new Error(`supabase getPending: ${error.message}`);
+    if (!data) return null;
+    return { token: data.token as string, sessionId: data.session_id as string, expiresAt: Number(data.expires_at) };
+  }
+  async deletePending(ref: string): Promise<void> {
+    await this.db.from("kudi_pending").delete().eq("ref", ref);
   }
 
   async recordEvent(sessionId: string, event: KudiEvent): Promise<void> {
