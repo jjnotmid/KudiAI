@@ -33,12 +33,18 @@ export class TelegramChannel implements Channel {
           ),
         }
       : undefined;
-    await this.call("sendMessage", {
-      chat_id: msg.chatId,
-      text: msg.text,
-      parse_mode: "HTML",
-      reply_markup,
-    });
+    // A failed status message must NOT abort a money/account operation, so send
+    // is best-effort: log and continue rather than throw.
+    try {
+      await this.call("sendMessage", {
+        chat_id: msg.chatId,
+        text: msg.text,
+        parse_mode: "HTML",
+        reply_markup,
+      });
+    } catch (e) {
+      console.warn(`[telegram] sendMessage failed for ${msg.chatId}: ${String(e).slice(0, 120)}`);
+    }
   }
 
   async answerCallback(callbackId: string, text?: string): Promise<void> {
