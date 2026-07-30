@@ -3,8 +3,33 @@ import { getEnv } from "@/lib/env";
 import { getStore } from "@/lib/store";
 import type { BmoniAccount } from "@/lib/store/types";
 import { log } from "@/lib/log";
-import { BmoniClient } from "./client";
+import { BmoniClient, BmoniHttpError } from "./client";
 import { deriveOwnerAccount } from "./owner";
+
+/**
+ * Create the BMONI user, retrying with a unique email/phone if the given ones
+ * already exist (409). The user's real email is still what got verified; BMONI
+ * just needs a unique record, so a returning user is never stuck in a loop.
+ */
+async function createUserResilient(
+  client: BmoniClient,
+  firstName: string,
+  email: string,
+  phone: string,
+) {
+  try {
+    return await client.createUser({ firstName, email, phoneNumber: phone });
+  } catch (e) {
+    if (e instanceof BmoniHttpError && e.status === 409) {
+      const r = randomInt(0, 1_000_000_000);
+      const at = email.indexOf("@");
+      const uEmail = at > 0 ? `${email.slice(0, at)}+k${r.toString(36)}${email.slice(at)}` : `kudi.${r}@kudi.app`;
+      const uPhone = `+2349${String(r).padStart(9, "0").slice(0, 9)}`;
+      return client.createUser({ firstName, email: uEmail, phoneNumber: uPhone });
+    }
+    throw e;
+  }
+}
 
 export const SANDBOX_BVN = "22222222222";
 
@@ -36,7 +61,7 @@ export async function createBmoniAccount(
   const owner = deriveOwnerAccount(sessionId);
   const firstName = details.fullName.trim().split(/\s+/)[0] || "Kudi";
 
-  const user = await client.createUser({ firstName, email: details.email, phoneNumber: details.phone });
+  const user = await createUserResilient(client, firstName, details.email, details.phone);
   const challenge = await client.ownerProofChallenge(user.bmoniUserId, "CNGN", owner.address);
   const signature = await owner.signMessage({ message: challenge.message });
   const wallet = await client.createManagedWallet(
