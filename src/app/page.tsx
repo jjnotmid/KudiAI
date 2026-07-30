@@ -3,7 +3,7 @@ import Link from "next/link";
 const TELEGRAM = "https://t.me/KudiAI_Bot";
 
 /**
- * Team — edit names/roles here and drop square photos in /public/team/.
+ * Team: edit names/roles here and drop square photos in /public/team/.
  * Missing photos fall back to a monogram tile, so this renders fine today.
  */
 const TEAM: { name: string; role: string; photo?: string; github: string }[] = [
@@ -54,7 +54,7 @@ export default function Home() {
               <span className="text-brass">It listens.</span>
             </h1>
             <p className="mt-6 max-w-md text-lg leading-relaxed text-ink-soft">
-              Check your balance, make a card, or send money just by talking — by voice or text, in
+              Check your balance, make a card, or send money just by talking, by voice or text, in
               English or Pidgin. Kudi always asks before it moves a single naira.
             </p>
             <div className="mt-10 flex flex-col items-start gap-3">
@@ -88,7 +88,7 @@ export default function Home() {
                     <span className="tnum tracking-[0.3em]">••••</span>
                   </Bubble>
                   <Bubble side="kudi" ok>
-                    ✅ Sent to Chidi. New balance <b className="tnum">₦245,000</b>.
+                    Sent to Chidi. New balance <b className="tnum">₦245,000</b>.
                   </Bubble>
                 </div>
               </div>
@@ -97,26 +97,43 @@ export default function Home() {
         </div>
       </section>
 
+      {/* Capabilities strip */}
+      <section aria-label="At a glance" className="border-y border-paper-2 bg-white/50">
+        <div className="mx-auto grid max-w-6xl grid-cols-2 divide-y divide-paper-2 px-5 sm:grid-cols-4 sm:divide-x sm:divide-y-0">
+          {[
+            ["English & Pidgin", "Type or speak"],
+            ["Any Nigerian bank", "Verified recipient"],
+            ["USD accounts", "Live exchange rate"],
+            ["PIN on every send", "Nothing moves without you"],
+          ].map(([title, sub]) => (
+            <div key={title} className="px-5 py-6 first:pt-6">
+              <div className="font-display text-lg font-semibold text-naira">{title}</div>
+              <div className="mt-1 text-sm text-ink-soft">{sub}</div>
+            </div>
+          ))}
+        </div>
+      </section>
+
       {/* Mission */}
-      <section className="border-y border-paper-2 bg-paper-2/40">
+      <section className="border-b border-paper-2 bg-paper-2/40">
         <div className="mx-auto max-w-4xl px-5 py-16">
           <h2 className="font-display text-3xl font-semibold text-naira md:text-4xl">
             For the people banking apps leave behind.
           </h2>
           <div className="mt-6 space-y-4 text-lg text-ink-soft">
             <p>
-              Millions of Nigerians have money to manage but are shut out by the interface — not the
+              Millions of Nigerians have money to manage but are shut out by the interface, not the
               money. Banking apps are dense, English-first and full of menus. If you read English
               slowly, or you have never lived inside an app, the app itself becomes the wall.
             </p>
             <p>
               A market trader, an older parent, someone who has always asked their child to “help me
-              press it” — they should not need app literacy to save, to pay a supplier, to move
+              press it”, they should not need app literacy to save, to pay a supplier, to move
               their own money. So we made the interface a <strong className="text-ink">conversation</strong>,
               in the language they already speak, out loud if they want.
             </p>
             <p className="text-ink">
-              That is Kudi. Money anyone can use, just by talking — and it always asks before it moves
+              That is Kudi. Money anyone can use, just by talking, and it always asks before it moves
               a naira.
             </p>
           </div>
@@ -124,13 +141,20 @@ export default function Home() {
       </section>
 
       {/* How it works */}
-      <section className="mx-auto max-w-4xl px-5 py-16">
+      <section className="mx-auto max-w-5xl px-5 py-16">
         <h2 className="font-display text-3xl font-semibold text-naira">How it works</h2>
-        <ol className="mt-8 space-y-6">
-          <Step n="1" title="Say it" body="Type or send a voice note: “Send 5k give my brother.” Kudi understands English and Pidgin." />
-          <Step n="2" title="Kudi shows you a slip" body="It repeats the exact amount and who it is going to, and waits. Nothing has moved yet." />
-          <Step n="3" title="Approve with your PIN" body="You enter your 4-digit PIN. Only then does the money move — and your balance updates." />
-        </ol>
+        <p className="mt-2 text-ink-soft">Three steps. No forms, no menus.</p>
+        <div className="mt-8 grid gap-5 md:grid-cols-3">
+          <StepCard n="1" title="Say it" body="Type or send a voice note. Kudi understands English and Pidgin.">
+            <Bubble side="user">Send 5k give my brother</Bubble>
+          </StepCard>
+          <StepCard n="2" title="Kudi shows a slip" body="It restates the exact amount and recipient, and waits. Nothing has moved.">
+            <Bubble side="kudi">Send <b className="tnum">₦5,000</b> to Chidi? Enter your PIN.</Bubble>
+          </StepCard>
+          <StepCard n="3" title="Approve with your PIN" body="Only then does the money move, and your balance updates instantly.">
+            <Bubble side="kudi" ok>Sent to Chidi. Balance <b className="tnum">₦245,000</b>.</Bubble>
+          </StepCard>
+        </div>
       </section>
 
       {/* Safety */}
@@ -140,7 +164,7 @@ export default function Home() {
             <h2 className="font-display text-3xl font-semibold">Kudi never moves money until you approve.</h2>
             <p className="mt-4 max-w-lg text-paper/80">
               Every transfer is locked behind a signed, single-use confirmation and your PIN. The AI
-              can understand what you want — but it is structurally unable to move money on its own.
+              can understand what you want, but it is structurally unable to move money on its own.
               Even a tricky message can’t make Kudi send a naira you didn’t approve.
             </p>
           </div>
@@ -160,8 +184,14 @@ export default function Home() {
           Kudi understands English and Nigerian Pidgin, and answers the way you spoke to it.
         </p>
         <div className="mt-8 grid gap-4 md:grid-cols-2">
-          <Quote lang="English" text="“What’s my balance?” → “Your balance is ₦250,000 and $120.”" />
-          <Quote lang="Pidgin" text="“How much I get?” → “You get ₦250,000 and $120.”" />
+          <LangChat lang="English">
+            <Bubble side="user">What’s my balance?</Bubble>
+            <Bubble side="kudi">Your balance is <b className="tnum">₦250,000</b> and <b className="tnum">$120</b>.</Bubble>
+          </LangChat>
+          <LangChat lang="Pidgin">
+            <Bubble side="user">How much I get?</Bubble>
+            <Bubble side="kudi">You get <b className="tnum">₦250,000</b> and <b className="tnum">$120</b>.</Bubble>
+          </LangChat>
         </div>
       </section>
 
@@ -170,22 +200,24 @@ export default function Home() {
         <div className="mx-auto max-w-4xl px-5 py-16">
           <h2 className="font-display text-3xl font-semibold text-naira">Everything money, one chat</h2>
           <p className="mt-3 max-w-xl text-lg text-ink-soft">
-            No app to learn. Kudi does the work — you just talk.
+            No app to learn. Kudi does the work. You just talk.
           </p>
-          <div className="mt-8 grid gap-x-8 gap-y-6 sm:grid-cols-2">
+          <div className="mt-10 grid gap-px overflow-hidden rounded-2xl border border-paper-2 bg-paper-2 sm:grid-cols-2 lg:grid-cols-3">
             {[
               ["Send to any bank", "Verified recipient name before a naira leaves. PIN on every transfer."],
-              ["Save on the go", "“Save 2k” and it’s tucked away. Build the habit without thinking."],
+              ["Save on the go", "Say “save 2k” and it is tucked away. Build the habit without thinking."],
               ["USD accounts", "Open a dollar account and convert naira to USD at a live rate."],
-              ["Fraud watch", "Unusual transfers get flagged and double-checked before they go out."],
-              ["Money advice", "“Can I afford this?” Kudi answers from your real balance."],
-              ["Spending insights", "“Where did my money go?” — a clear breakdown, any time."],
+              ["Fraud watch", "Unusual transfers get flagged and double checked before they go out."],
+              ["Money advice", "Ask “can I afford this?” and Kudi answers from your real balance."],
+              ["Spending insights", "Ask “where did my money go?” for a clear breakdown, any time."],
               ["Virtual cards", "Spin up a card for online payments in seconds."],
-              ["Voice or text, EN & Pidgin", "Send a voice note in Pidgin. Kudi understands and replies your way."],
+              ["Voice or text", "Send a voice note in Pidgin. Kudi understands and replies your way."],
+              ["Always confirms", "Every move is restated and locked behind your PIN before it happens."],
             ].map(([title, body]) => (
-              <div key={title}>
+              <div key={title} className="bg-paper p-6 transition-colors hover:bg-white">
+                <div className="mb-3 h-1 w-8 rounded-full bg-brass" aria-hidden />
                 <h3 className="font-display text-lg font-semibold text-ink">{title}</h3>
-                <p className="mt-1 text-ink-soft">{body}</p>
+                <p className="mt-1.5 text-ink-soft">{body}</p>
               </div>
             ))}
           </div>
@@ -235,7 +267,7 @@ export default function Home() {
           <TelegramButton label="Talk to Kudi" />
         </div>
         <p className="mx-auto mt-8 max-w-md text-sm text-ink-soft">
-          Money anyone can use, just by talking — in your own language.
+          Money anyone can use, just by talking, in your own language.
         </p>
         <p className="mx-auto mt-2 text-xs text-ink-soft/70">© 2026 Kudi</p>
       </footer>
@@ -262,36 +294,34 @@ function Bubble({ side, ok, children }: { side: "user" | "kudi"; ok?: boolean; c
   );
 }
 
-function Step({ n, title, body }: { n: string; title: string; body: string }) {
+function StepCard({ n, title, body, children }: { n: string; title: string; body: string; children: React.ReactNode }) {
   return (
-    <li className="flex gap-5">
-      <span className="tnum flex h-10 w-10 shrink-0 items-center justify-center rounded-full border-2 border-brass font-semibold text-brass">
+    <div className="flex flex-col rounded-2xl border border-paper-2 bg-white/60 p-6">
+      <span className="tnum mb-4 flex h-9 w-9 items-center justify-center rounded-full border-2 border-brass font-semibold text-brass">
         {n}
       </span>
-      <div>
-        <h3 className="font-display text-xl font-semibold text-ink">{title}</h3>
-        <p className="mt-1 text-ink-soft">{body}</p>
-      </div>
-    </li>
+      <h3 className="font-display text-xl font-semibold text-ink">{title}</h3>
+      <p className="mt-1.5 text-ink-soft">{body}</p>
+      <div className="mt-5 space-y-2">{children}</div>
+    </div>
+  );
+}
+
+function LangChat({ lang, children }: { lang: string; children: React.ReactNode }) {
+  return (
+    <div className="rounded-2xl border border-paper-2 bg-white/60 p-5">
+      <div className="mb-3 text-xs uppercase tracking-widest text-brass">{lang}</div>
+      <div className="space-y-2">{children}</div>
+    </div>
   );
 }
 
 function Guard({ text }: { text: string }) {
   return (
     <li className="flex items-start gap-3">
-      <span aria-hidden className="tnum mt-0.5 font-semibold text-brass">
-        ✓
-      </span>
+      <span aria-hidden className="mt-2.5 h-1.5 w-1.5 shrink-0 rounded-full bg-brass" />
       <span>{text}</span>
     </li>
   );
 }
 
-function Quote({ lang, text }: { lang: string; text: string }) {
-  return (
-    <div className="rounded-xl border border-paper-2 bg-white/60 p-5">
-      <div className="text-xs uppercase tracking-widest text-brass">{lang}</div>
-      <p className="mt-2 text-ink">{text}</p>
-    </div>
-  );
-}
