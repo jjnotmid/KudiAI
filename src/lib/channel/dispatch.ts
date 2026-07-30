@@ -296,6 +296,7 @@ export async function handleMessage(channel: Channel, msg: IncomingMessage): Pro
       });
     } catch (e) {
       log("error", "signup.create_failed", { sessionId, detail: String(e) });
+      await ev(sessionId, { kind: "signup_error", flagged: true, detail: { error: String(e).slice(0, 400) } });
       await getStore().setFlow(sessionId, { kind: "su_phone", fullName: state.fullName, email: state.email });
       await channel.send({ chatId: msg.chatId, text: "Account creation get small wahala. Send your phone number make we try again." });
     }
