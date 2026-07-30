@@ -57,6 +57,15 @@ export class TelegramChannel implements Channel {
     await this.call("answerCallbackQuery", { callback_query_id: callbackId, text });
   }
 
+  /** Show a "typing…" bubble. Best-effort; lasts ~5s or until the next message. */
+  async sendTyping(chatId: string): Promise<void> {
+    try {
+      await this.call("sendChatAction", { chat_id: chatId, action: "typing" });
+    } catch {
+      /* purely cosmetic — never let it affect the flow */
+    }
+  }
+
   async deleteMessage(chatId: string, messageId: string): Promise<void> {
     try {
       await this.call("deleteMessage", { chat_id: chatId, message_id: Number(messageId) });

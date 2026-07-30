@@ -49,4 +49,6 @@ export interface Channel {
   answerCallback?(callbackId: string, text?: string): Promise<void>;
   /** Remove a message (used to hide a PIN the user typed). Best-effort. */
   deleteMessage?(chatId: string, messageId: string): Promise<void>;
+  /** Show a "typing…" indicator while the bot works. Best-effort, cosmetic. */
+  sendTyping?(chatId: string): Promise<void>;
 }

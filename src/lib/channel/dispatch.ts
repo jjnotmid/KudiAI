@@ -51,19 +51,27 @@ const MENU_MAP: Record<string, string> = {
 
 /** A dashboard-style greeting: current balance + quick actions. Shown on greetings
  * and on returning, so the user always lands on something useful. */
+async function savingsTotalMinor(sessionId: string): Promise<number> {
+  const events = await getStore().listEvents(sessionId);
+  return events.filter((e) => e.kind === "savings").reduce((s, e) => s + (e.amountMinor ?? 0), 0);
+}
+
 async function sendDashboard(channel: Channel, sessionId: string, chatId: string): Promise<void> {
   let balLine = "—";
+  let savedMinor = 0;
   try {
     const bal = await getMoneyProvider().getBalances({ sessionId });
     if (bal.ok && bal.data.length) balLine = bal.data.map((b) => formatMoney(b.available)).join("  ·  ");
+    savedMinor = await savingsTotalMinor(sessionId);
   } catch {
     /* balance is best-effort on the dashboard */
   }
+  const savedLine = savedMinor > 0 ? `🐷 <b>Savings:</b> ${formatMoney(money(savedMinor, "NGN"))}\n` : "";
   await channel.send({
     chatId,
     text:
       "👋 <b>Welcome to Kudi</b>\n\n" +
-      `💰 <b>Balance:</b> ${balLine}\n\n` +
+      `💰 <b>Balance:</b> ${balLine}\n${savedLine}\n` +
       "Wetin you wan do today? Tap a button below 👇, or just talk to me — by text or voice note.",
     keyboard: MENU_KEYBOARD,
   });
@@ -130,6 +138,7 @@ type Flow =
   | { kind: "kyc_selfie" }
   | { kind: "confirm_delete" }
   | { kind: "await_save_amount" }
+  | { kind: "await_convert"; from: "NGN" | "USD"; to: "NGN" | "USD" }
   | { kind: "login_pin"; tries: number }
   | { kind: "reveal_card"; tries: number };
 
@@ -179,6 +188,7 @@ export async function handleMessage(channel: Channel, msg: IncomingMessage): Pro
   const mapped = MENU_MAP[text.toLowerCase()];
   if (mapped) text = mapped;
   const lower = text.toLowerCase();
+  void channel.sendTyping?.(msg.chatId); // "typing…" while we work (cosmetic, best-effort)
 
   const state = (await getStore().getFlow(sessionId)) as Flow | null;
   log("info", "msg.in", { sessionId, text: text.slice(0, 60), flow: state?.kind ?? "none", voice: msg.fromVoice });
@@ -392,6 +402,22 @@ export async function handleMessage(channel: Channel, msg: IncomingMessage): Pro
     }
     await getStore().setFlow(sessionId, null);
     await doSave(channel, sessionId, msg.chatId, amount);
+    return;
+  }
+
+  if (state?.kind === "await_convert") {
+    if (lower === "cancel") {
+      await getStore().setFlow(sessionId, null);
+      await channel.send({ chatId: msg.chatId, text: "Okay, no wahala." });
+      return;
+    }
+    const parsed = parseAmount(text, state.from);
+    if (!parsed) {
+      await channel.send({ chatId: msg.chatId, text: "Tell me a clear amount, e.g. 5000 or 5k." });
+      return;
+    }
+    await getStore().setFlow(sessionId, null);
+    await startConvert(channel, sessionId, msg.chatId, state.from, state.to, money(parsed.minor, state.from));
     return;
   }
 
@@ -621,9 +647,10 @@ export async function handleMessage(channel: Channel, msg: IncomingMessage): Pro
   }
 
   const parsed = parseTransferDraft(text);
-  const transferIntent = /\b(send|transfer|pay)\b/i.test(text);
-  const hasAccountDetails = Boolean(parsed.accountNumber && parsed.bank);
-  const isBankTransferRequest = transferIntent && (hasAccountDetails || /account|bank|number/i.test(text) || parsed.amountMinor !== undefined);
+  const transferIntent = /\b(send|transfer|pay|remit|credit)\b/i.test(text);
+  // Don't treat a question/history ("how much did I send?") as a new transfer.
+  const isQuestion = /^(how much|how far|did|does|do i|when|where|which|wetin|show|list|what)\b/i.test(text.trim());
+  const isBankTransferRequest = transferIntent && !isQuestion;
 
   if (isBankTransferRequest) {
     await getStore().setFlow(sessionId, { kind: "await_bank_transfer", draft: { amountMinor: parsed.amountMinor, currency: "NGN", accountNumber: parsed.accountNumber, bank: parsed.bank?.displayName, recipientName: parsed.recipientName } });
@@ -752,6 +779,7 @@ export async function handlePhoto(
 ): Promise<void> {
   const sessionId = sessionFor(msg.chatId);
   const state = (await getStore().getFlow(sessionId)) as Flow | null;
+  void channel.sendTyping?.(msg.chatId);
 
   if (state?.kind === "kyc_selfie") {
     await channel.send({ chatId: msg.chatId, text: "Got your selfie — verifying your face… 🔍" });
@@ -949,6 +977,32 @@ async function doSave(channel: Channel, sessionId: string, chatId: string, amoun
   await channel.send({ chatId, text: `🐷 Saved ${formatMoney(res.data.savedNow)} ✅\n<i>Fee: ₦25</i>` });
 }
 
+/** Validate funds then put a conversion behind the PIN gate. Shared by the
+ * one-shot ("change 10k to dollar") and two-step (tap Convert → type amount) paths. */
+async function startConvert(
+  channel: Channel,
+  sessionId: string,
+  chatId: string,
+  from: "NGN" | "USD",
+  to: "NGN" | "USD",
+  amount: Money,
+): Promise<void> {
+  const bal = await getMoneyProvider().getBalances({ sessionId });
+  const avail = bal.ok ? (bal.data.find((b) => b.currency === from)?.available.minor ?? 0) : 0;
+  if (avail < amount.minor) {
+    await channel.send({ chatId, text: `You no get enough ${from} to convert. You get ${formatMoney(money(avail, from))}.` });
+    return;
+  }
+  const { token } = createConfirmation({ sessionId, action: "convert", amountMinor: amount.minor, currency: from, to });
+  const ref = await stashConfirm(token, sessionId);
+  await getStore().setFlow(sessionId, { kind: "pin_for", ref, tries: 0 });
+  await channel.send({
+    chatId,
+    text: `Change ${formatMoney(amount)} to ${to}\n\n🔒 Enter your 4-digit PIN to approve, or type cancel.`,
+    buttons: [[{ label: "Cancel", data: `cxl:${ref}`, kind: "cancel" }]],
+  });
+}
+
 async function tryHandleLocalIntent(channel: Channel, sessionId: string, chatId: string, text: string): Promise<boolean> {
   const lower = text.toLowerCase();
   const provider = getMoneyProvider();
@@ -960,20 +1014,22 @@ async function tryHandleLocalIntent(channel: Channel, sessionId: string, chatId:
         "Here's how to use Kudi 👇\n\n" +
         "💰 <b>Balance</b> — “how much I get?”\n" +
         "📤 <b>Send</b> — “send 5k”, then I ask for the account number + bank\n" +
-        "🐷 <b>Save</b> — “save 2k”\n" +
+        "🐷 <b>Save</b> — “save 2k” · see it with “my savings”\n" +
         "💵 <b>USD account</b> — “open USD account” (₦500)\n" +
         "🔁 <b>Convert</b> — “change 10k to dollar”\n" +
         "📊 <b>Spending</b> — “where my money go?”\n" +
+        "💡 <b>Advice</b> — “can I afford 20k this week?”\n" +
         "💳 <b>Card</b> — “create a card” (₦200)\n" +
-        "🪙 <b>Receive crypto</b> — “my wallet address”\n" +
-        "🔒 Every transfer needs your PIN. A small ₦25 fee applies per transaction.\n\n" +
+        "🪙 <b>Receive crypto</b> — “my wallet address”\n\n" +
+        "🛡️ I automatically flag unusual transfers, and every transfer needs your PIN. A small ₦25 fee applies per transaction.\n\n" +
         "You fit talk by text or voice note. Type <b>delete account</b> to close your account.",
-      buttons: QUICK_BUTTONS,
+      keyboard: MENU_KEYBOARD,
     });
     return true;
   }
 
   if (
+    !/\b(go|went|spend|spending|breakdown|save|savings)\b/i.test(lower) &&
     /\bbalance\b|\bbal\b|how much (i|we|dey|money|remain)|how much i get|wetin dey (my |the )?account|wetin i get|wetin dey inside|my money|how far (my )?account|check.*(balance|account)|money wey dey/i.test(
       lower,
     )
@@ -983,8 +1039,8 @@ async function tryHandleLocalIntent(channel: Channel, sessionId: string, chatId:
       await channel.send({ chatId, text: res.error.userMessage });
       return true;
     }
-    const lines = res.data.map((b) => `${b.currency}: ${formatMoney(b.available)}`).join("\n");
-    await channel.send({ chatId, text: `💰 Your balance:\n${lines}` });
+    const lines = res.data.map((b) => `${b.currency === "USD" ? "💵 USD" : "₦ NGN"}: ${formatMoney(b.available)}`).join("\n");
+    await channel.send({ chatId, text: `💰 <b>Your balance</b>\n${lines}` });
     return true;
   }
 
@@ -1062,7 +1118,24 @@ async function tryHandleLocalIntent(channel: Channel, sessionId: string, chatId:
   if (/(open|create|get|want|need).*(usd|dollar).*(account|wallet)|(usd|dollar)\s+(account|wallet)/i.test(lower)) {
     const events = await getStore().listEvents(sessionId);
     if (events.some((e) => e.kind === "usd_account")) {
-      await channel.send({ chatId, text: "You already get a USD account ✅ You fit convert naira to dollars anytime." });
+      const bal = await provider.getBalances({ sessionId });
+      const usd = bal.ok ? (bal.data.find((b) => b.currency === "USD")?.available.minor ?? 0) : 0;
+      let cryptoLine = "";
+      try {
+        const r = await getReceiveAddress(sessionId);
+        if (r.address) cryptoLine = `\n🪙 Or receive USDC (Base network):\n<code>${r.address}</code>`;
+      } catch {
+        /* deposit address is best-effort */
+      }
+      await channel.send({
+        chatId,
+        text:
+          "💵 <b>Your USD account</b>\n\n" +
+          `Balance: <b>${formatMoney(money(usd, "USD"))}</b>\n\n` +
+          "<b>How to add dollars:</b>\n" +
+          "🔁 Convert naira — say “change 10k to dollar”" +
+          cryptoLine,
+      });
       return true;
     }
     if (!events.some((e) => e.kind === "kyc_completed" || e.kind === "account_created")) {
@@ -1091,9 +1164,10 @@ async function tryHandleLocalIntent(channel: Channel, sessionId: string, chatId:
   }
 
   if (/\bconvert\b|\bexchange\b|\bswap\b|change\s+.*(to|into)\s*(dollar|usd|naira|ngn|\$)/i.test(lower)) {
-    const toUsd = /(dollar|usd|\$)/i.test(lower);
-    const from: "NGN" | "USD" = toUsd ? "NGN" : "USD";
-    const to: "NGN" | "USD" = toUsd ? "USD" : "NGN";
+    // Direction from the target ("to naira" → USD→NGN); default is NGN→USD.
+    const targetNaira = /to\s*(naira|ngn|₦)/i.test(lower);
+    const from: "NGN" | "USD" = targetNaira ? "USD" : "NGN";
+    const to: "NGN" | "USD" = targetNaira ? "NGN" : "USD";
     if (to === "USD") {
       const events = await getStore().listEvents(sessionId);
       if (!events.some((e) => e.kind === "usd_account")) {
@@ -1106,24 +1180,17 @@ async function tryHandleLocalIntent(channel: Channel, sessionId: string, chatId:
     }
     const parsed = parseAmount(text, from);
     if (!parsed) {
-      await channel.send({ chatId, text: "How much you wan convert? For example: change 10k to dollar." });
+      await getStore().setFlow(sessionId, { kind: "await_convert", from, to });
+      await channel.send({
+        chatId,
+        text:
+          from === "NGN"
+            ? "How much naira you wan change to dollars? Just type the amount, e.g. 5000 or 5k."
+            : "How much dollars you wan change to naira? e.g. 10 or $10.",
+      });
       return true;
     }
-    const amount = money(parsed.minor, from);
-    const bal = await provider.getBalances({ sessionId });
-    const avail = bal.ok ? (bal.data.find((b) => b.currency === from)?.available.minor ?? 0) : 0;
-    if (avail < amount.minor) {
-      await channel.send({ chatId, text: `You no get enough ${from} to convert. You get ${formatMoney(money(avail, from))}.` });
-      return true;
-    }
-    const { token } = createConfirmation({ sessionId, action: "convert", amountMinor: amount.minor, currency: from, to });
-    const ref = await stashConfirm(token, sessionId);
-    await getStore().setFlow(sessionId, { kind: "pin_for", ref, tries: 0 });
-    await channel.send({
-      chatId,
-      text: `Change ${formatMoney(amount)} to ${to}\n\n🔒 Enter your 4-digit PIN to approve, or type cancel.`,
-      buttons: [[{ label: "Cancel", data: `cxl:${ref}`, kind: "cancel" }]],
-    });
+    await startConvert(channel, sessionId, chatId, from, to, money(parsed.minor, from));
     return true;
   }
 
@@ -1147,6 +1214,22 @@ async function tryHandleLocalIntent(channel: Channel, sessionId: string, chatId:
     return true;
   }
 
+  // Viewing savings (no amount to save) → show the savings pot.
+  if (
+    !parseAmount(text, "NGN") &&
+    /(my savings|savings balance|how (much|far).*(save|saving)|see .*saving|check .*saving|wetin.*save|show .*saving)/i.test(lower)
+  ) {
+    const saved = await savingsTotalMinor(sessionId);
+    await channel.send({
+      chatId,
+      text:
+        `🐷 <b>Your savings</b>\n\n` +
+        `You don save <b>${formatMoney(money(saved, "NGN"))}</b> so far.\n\n` +
+        (saved > 0 ? "Say “save 2k” to add more." : "Say “save 2k” to start saving."),
+    });
+    return true;
+  }
+
   if (/save|savings/i.test(lower)) {
     const amount = parseAmount(text, "NGN");
     if (!amount) {
@@ -1159,7 +1242,8 @@ async function tryHandleLocalIntent(channel: Channel, sessionId: string, chatId:
   }
 
   if (/send|transfer|pay/i.test(lower)) {
-    await channel.send({ chatId, text: "I fit help with transfer. Send the amount first, and then the account number and bank." });
+    await getStore().setFlow(sessionId, { kind: "await_bank_transfer", draft: { currency: "NGN" } });
+    await channel.send({ chatId, text: "How much you wan send? Tell me the amount, for example 5k or 5000." });
     return true;
   }
 
