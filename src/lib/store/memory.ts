@@ -35,6 +35,11 @@ export class MemoryStore implements Store {
       .filter((e) => e.sessionId === sessionId && (e.kind === "transfer" || e.kind === "savings"))
       .reduce((s, e) => s + (e.amountMinor ?? 0), 0);
   }
+  async listEvents(sessionId: string): Promise<KudiEvent[]> {
+    return this.events
+      .filter((e) => e.sessionId === sessionId)
+      .map((e) => ({ kind: e.kind, amountMinor: e.amountMinor, currency: e.currency, detail: e.detail, flagged: e.flagged }));
+  }
 
   private readonly flows = new Map<string, unknown>();
   private readonly pendings = new Map<string, PendingConfirmRecord>();

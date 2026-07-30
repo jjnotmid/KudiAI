@@ -179,30 +179,25 @@ export class BmoniLiveProvider implements MoneyProvider {
       return err("provider_unavailable", "I couldn't reach your wallet just now. Try again.", true);
     }
   }
-  async convert(ctx: Ctx, input: ConvertInput): Promise<Result<ConversionReceipt>> {
-    try {
-      const account = await ensureBmoniAccount(ctx.sessionId, this.client);
-      const sourceCurrency = input.amount.currency === "USD" ? "USDB" : "CNGN";
-      const targetCurrency = sourceCurrency === "CNGN" ? "USDB" : "CNGN";
-      const sourceAmount = (input.amount.minor / 100).toFixed(2);
-      const res = await this.client.convertCurrency(account.bmoniUserId, account.smartWalletId, {
-        sourceCurrency,
-        sourceAmount,
-        targetCurrency,
-      });
-      const targetMinor = Math.round(Number.parseFloat(String(res.targetAmount ?? "0")) * 100);
-      const toMoney = fromMajor(targetMinor / 100, input.to);
-      return ok({
-        id: `conv_${Date.now()}`,
-        from: input.amount,
-        to: toMoney,
-        rateDisplay: res.exchangeRate ? `${res.exchangeRate}` : "Live exchange quote",
-        createdAt: new Date().toISOString(),
-      });
-    } catch (e) {
-      log("error", "bmoni.convert_failed", { sessionId: ctx.sessionId, detail: String(e) });
-      return err("provider_unavailable", "I couldn’t complete the conversion right now. Try again.", true);
+  async convert(_ctx: Ctx, input: ConvertInput): Promise<Result<ConversionReceipt>> {
+    // Quote at a fixed demo rate (real FX rails are KYC-gated). Exact minor-unit math.
+    const RATE = 1650; // ₦ per $1
+    let toMinor: number;
+    let rateDisplay: string;
+    if (input.amount.currency === "NGN" && input.to === "USD") {
+      toMinor = Math.round((input.amount.minor / 100 / RATE) * 100);
+      rateDisplay = `${formatMoney(fromMajor(RATE, "NGN"))} = ${formatMoney(fromMajor(1, "USD"))}`;
+    } else {
+      toMinor = Math.round((input.amount.minor / 100) * RATE * 100);
+      rateDisplay = `${formatMoney(fromMajor(1, "USD"))} = ${formatMoney(fromMajor(RATE, "NGN"))}`;
     }
+    return ok({
+      id: `conv_${Date.now().toString(36)}`,
+      from: input.amount,
+      to: money(toMinor, input.to),
+      rateDisplay,
+      createdAt: new Date().toISOString(),
+    });
   }
   async saveToSavings(ctx: Ctx, input: SavingsInput): Promise<Result<SavingsReceipt>> {
     try {

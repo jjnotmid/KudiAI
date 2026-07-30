@@ -836,6 +836,47 @@ async function tryHandleLocalIntent(channel: Channel, sessionId: string, chatId:
     return true;
   }
 
+  if (/\bconvert\b|\bexchange\b|\bswap\b|change\s+.*(to|into)\s*(dollar|usd|naira|ngn|\$)/i.test(lower)) {
+    const toUsd = /(dollar|usd|\$)/i.test(lower);
+    const from: "NGN" | "USD" = toUsd ? "NGN" : "USD";
+    const to: "NGN" | "USD" = toUsd ? "USD" : "NGN";
+    const parsed = parseAmount(text, from);
+    if (!parsed) {
+      await channel.send({ chatId, text: "How much you wan convert? For example: change 10k to dollar." });
+      return true;
+    }
+    const amount = money(parsed.minor, from);
+    const { token } = createConfirmation({ sessionId, action: "convert", amountMinor: amount.minor, currency: from, to });
+    const ref = await stashConfirm(token, sessionId);
+    await getStore().setFlow(sessionId, { kind: "pin_for", ref, tries: 0 });
+    await channel.send({
+      chatId,
+      text: `Change ${formatMoney(amount)} to ${to}\n\n🔒 Enter your 4-digit PIN to approve, or type cancel.`,
+      buttons: [[{ label: "Cancel", data: `cxl:${ref}`, kind: "cancel" }]],
+    });
+    return true;
+  }
+
+  if (/where.*(my )?money.*(go|went)|how.*(i|we|dey|you).*spend|my spending|\bspending\b|breakdown/i.test(lower)) {
+    const events = await getStore().listEvents(sessionId);
+    const spend = events.filter((e) => e.kind === "transfer" || e.kind === "savings");
+    if (spend.length === 0) {
+      await channel.send({ chatId, text: "You never send or save money yet — once you start, I go break am down for you 📊" });
+      return true;
+    }
+    const byCat: Record<string, number> = {};
+    for (const e of spend) {
+      const cat = e.kind === "savings" ? "Savings" : typeof e.detail?.to === "string" ? String(e.detail.to) : "Transfers";
+      byCat[cat] = (byCat[cat] ?? 0) + (e.amountMinor ?? 0);
+    }
+    const total = Object.values(byCat).reduce((a, b) => a + b, 0) || 1;
+    const lines = Object.entries(byCat)
+      .sort((a, b) => b[1] - a[1])
+      .map(([c, m]) => `• ${c}: ${formatMoney(money(m, "NGN"))} (${Math.round((m / total) * 100)}%)`);
+    await channel.send({ chatId, text: `📊 <b>Where your money went</b>\n${lines.join("\n")}\n\nTotal: ${formatMoney(money(total, "NGN"))}` });
+    return true;
+  }
+
   if (/save|savings/i.test(lower)) {
     const amount = parseAmount(text, "NGN");
     if (!amount) {

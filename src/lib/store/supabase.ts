@@ -101,6 +101,23 @@ export class SupabaseStore implements Store {
     return (data ?? []).reduce((s, r) => s + (Number(r.amount_minor) || 0), 0);
   }
 
+  async listEvents(sessionId: string): Promise<KudiEvent[]> {
+    const { data, error } = await this.db
+      .from("kudi_events")
+      .select("kind,amount_minor,currency,detail,flagged")
+      .eq("session_id", sessionId)
+      .order("created_at", { ascending: false })
+      .limit(200);
+    if (error) return [];
+    return (data ?? []).map((r) => ({
+      kind: r.kind as string,
+      amountMinor: r.amount_minor === null ? undefined : Number(r.amount_minor),
+      currency: (r.currency as string) ?? undefined,
+      detail: (r.detail as Record<string, unknown>) ?? undefined,
+      flagged: Boolean(r.flagged),
+    }));
+  }
+
   async recordEvent(sessionId: string, event: KudiEvent): Promise<void> {
     const { error } = await this.db.from("kudi_events").insert({
       session_id: sessionId,

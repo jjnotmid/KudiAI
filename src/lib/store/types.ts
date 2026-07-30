@@ -46,6 +46,8 @@ export interface Store {
   /** Sum of completed outbound amounts (transfers + savings) in minor units, for
    * a session — used to reflect spend against the live wallet balance. */
   sumSpent(sessionId: string): Promise<number>;
+  /** Recent events for a session (for spending analysis). */
+  listEvents(sessionId: string): Promise<KudiEvent[]>;
   /** Conversational flow state (signup step, PIN gate, etc.). Null = no state.
    * Persisted so the bot can run stateless on serverless (webhook). */
   getFlow(sessionId: string): Promise<unknown | null>;
