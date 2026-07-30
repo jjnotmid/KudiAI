@@ -84,21 +84,44 @@ export class BmoniLiveProvider implements MoneyProvider {
   }
 
 
+  /** Single source of truth for what a session can spend: the live NGN wallet
+   * minus local spend/fees, plus the effect of NGN⇄USD conversions, and the USD
+   * balance those conversions produced. */
+  private async computeBalances(ctx: Ctx): Promise<{ ngnAvail: number; usdMinor: number; hasUsdAccount: boolean }> {
+    const account = await ensureBmoniAccount(ctx.sessionId, this.client);
+    const res = await this.client.getBalances(account.bmoniUserId);
+    const store = getStore();
+    const spentMinor = await store.sumSpent(ctx.sessionId);
+
+    const events = await store.listEvents(ctx.sessionId);
+    let usdMinor = 0;
+    let ngnConvDelta = 0;
+    let hasUsdAccount = false;
+    for (const e of events) {
+      if (e.kind === "usd_account") hasUsdAccount = true;
+      if (e.kind !== "convert" || !e.detail) continue;
+      const d = e.detail as { fromMinor?: number; fromCcy?: string; toMinor?: number; toCcy?: string };
+      const fromMinor = Number(d.fromMinor) || 0;
+      const toMinor = Number(d.toMinor) || 0;
+      if (d.fromCcy === "NGN" && d.toCcy === "USD") {
+        ngnConvDelta -= fromMinor;
+        usdMinor += toMinor;
+      } else if (d.fromCcy === "USD" && d.toCcy === "NGN") {
+        usdMinor -= fromMinor;
+        ngnConvDelta += toMinor;
+      }
+    }
+
+    const ngnRow = res.balances.find((r) => (r.currency === "NGN" || r.currency === "CNGN") && r.error === null);
+    const bmoniNgn = Math.round((Number.parseFloat(ngnRow?.balance || "0") || 0) * 100);
+    return { ngnAvail: Math.max(0, bmoniNgn - spentMinor + ngnConvDelta), usdMinor: Math.max(0, usdMinor), hasUsdAccount };
+  }
+
   async getBalances(ctx: Ctx): Promise<Result<Balance[]>> {
     try {
-      const account = await ensureBmoniAccount(ctx.sessionId, this.client);
-      const res = await this.client.getBalances(account.bmoniUserId);
-      // Outbound money (transfers/savings) is reflected against the live balance.
-      const spentMinor = await getStore().sumSpent(ctx.sessionId);
-      const balances: Balance[] = res.balances
-        .filter((r) => r.error === null)
-        .map((r) => {
-          const currency = r.currency === "USD" || r.currency === "USDB" ? "USD" : "NGN";
-          const major = Number.parseFloat(r.balance || "0");
-          let minor = Math.round((Number.isFinite(major) ? major : 0) * 100);
-          if (currency === "NGN") minor = Math.max(0, minor - spentMinor);
-          return { currency, available: money(minor, currency) };
-        });
+      const { ngnAvail, usdMinor, hasUsdAccount } = await this.computeBalances(ctx);
+      const balances: Balance[] = [{ currency: "NGN", available: money(ngnAvail, "NGN") }];
+      if (hasUsdAccount || usdMinor > 0) balances.push({ currency: "USD", available: money(usdMinor, "USD") });
       return ok(balances);
     } catch (e) {
       log("error", "bmoni.getBalances_failed", { sessionId: ctx.sessionId, detail: String(e) });
@@ -149,12 +172,7 @@ export class BmoniLiveProvider implements MoneyProvider {
 
   async transfer(ctx: Ctx, input: TransferInput): Promise<Result<TransferReceipt>> {
     try {
-      const account = await ensureBmoniAccount(ctx.sessionId, this.client);
-      const res = await this.client.getBalances(account.bmoniUserId);
-      const ngn = res.balances.find((r) => r.currency === "NGN" || r.currency === "CNGN");
-      const bmoniMinor = Math.round(Number.parseFloat(ngn?.balance || "0") * 100);
-      const spentMinor = await getStore().sumSpent(ctx.sessionId);
-      const availMinor = Math.max(0, bmoniMinor - spentMinor);
+      const { ngnAvail: availMinor } = await this.computeBalances(ctx);
       if (availMinor < input.amount.minor) {
         return err(
           "insufficient_funds",
@@ -201,11 +219,7 @@ export class BmoniLiveProvider implements MoneyProvider {
   }
   async saveToSavings(ctx: Ctx, input: SavingsInput): Promise<Result<SavingsReceipt>> {
     try {
-      const account = await ensureBmoniAccount(ctx.sessionId, this.client);
-      const res = await this.client.getBalances(account.bmoniUserId);
-      const ngn = res.balances.find((r) => r.currency === "NGN" || r.currency === "CNGN");
-      const bmoniMinor = Math.round(Number.parseFloat(ngn?.balance || "0") * 100);
-      const availMinor = Math.max(0, bmoniMinor - (await getStore().sumSpent(ctx.sessionId)));
+      const { ngnAvail: availMinor } = await this.computeBalances(ctx);
       if (input.amount.currency === "NGN" && availMinor < input.amount.minor) {
         return err("insufficient_funds", `You only get ${formatMoney(money(availMinor, "NGN"))} to save.`);
       }

@@ -744,7 +744,17 @@ async function executeConfirmed(
         await channel.send({ chatId, text: res.error.userMessage });
         return;
       }
-      await ev(sessionId, { kind: "convert", amountMinor: amount.minor, currency: amount.currency });
+      await ev(sessionId, {
+        kind: "convert",
+        amountMinor: amount.minor,
+        currency: amount.currency,
+        detail: {
+          fromMinor: res.data.from.minor,
+          fromCcy: res.data.from.currency,
+          toMinor: res.data.to.minor,
+          toCcy: res.data.to.currency,
+        },
+      });
       await chargeFee(sessionId, "convert");
       await recordOutcome(sessionId, `Converted ${formatMoney(res.data.from)} to ${formatMoney(res.data.to)}.`);
       await channel.send({ chatId, text: conversionReceipt(res.data) });
@@ -976,6 +986,12 @@ async function tryHandleLocalIntent(channel: Channel, sessionId: string, chatId:
       return true;
     }
     const amount = money(parsed.minor, from);
+    const bal = await provider.getBalances({ sessionId });
+    const avail = bal.ok ? (bal.data.find((b) => b.currency === from)?.available.minor ?? 0) : 0;
+    if (avail < amount.minor) {
+      await channel.send({ chatId, text: `You no get enough ${from} to convert. You get ${formatMoney(money(avail, from))}.` });
+      return true;
+    }
     const { token } = createConfirmation({ sessionId, action: "convert", amountMinor: amount.minor, currency: from, to });
     const ref = await stashConfirm(token, sessionId);
     await getStore().setFlow(sessionId, { kind: "pin_for", ref, tries: 0 });
