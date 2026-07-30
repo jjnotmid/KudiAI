@@ -55,7 +55,8 @@ type Flow =
   | { kind: "su_dob"; fullName: string }
   | { kind: "su_bvn"; fullName: string; dob: string }
   | { kind: "kyc_selfie" }
-  | { kind: "confirm_delete" };
+  | { kind: "confirm_delete" }
+  | { kind: "await_save_amount" };
 
 function code6(): string {
   return String(randomInt(100000, 1000000));
@@ -201,6 +202,22 @@ export async function handleMessage(channel: Channel, msg: IncomingMessage): Pro
     return;
   }
 
+  if (state?.kind === "await_save_amount") {
+    if (lower === "cancel") {
+      await getStore().setFlow(sessionId, null);
+      await channel.send({ chatId: msg.chatId, text: "Okay, no wahala.", buttons: QUICK_BUTTONS });
+      return;
+    }
+    const amount = parseAmount(text, "NGN");
+    if (!amount) {
+      await channel.send({ chatId: msg.chatId, text: "Tell me a clear amount, e.g. 2k or 2000." });
+      return;
+    }
+    await getStore().setFlow(sessionId, null);
+    await doSave(channel, sessionId, msg.chatId, amount);
+    return;
+  }
+
   if (state?.kind === "confirm_delete") {
     if (text.trim().toUpperCase() === "DELETE") {
       await deleteAccount(sessionId);
@@ -241,6 +258,10 @@ export async function handleMessage(channel: Channel, msg: IncomingMessage): Pro
 
   // ── Sign-up: collect details, then create the account with them ──────
   if (state?.kind === "su_name") {
+    if (/^(hi+|hey+|hello+|start|\/start|menu|good\s?(morning|afternoon|evening)|how far)$/i.test(text.trim())) {
+      await channel.send({ chatId: msg.chatId, text: "To open your account, tell me your full name (the name on your account)." });
+      return;
+    }
     if (text.trim().length < 2) {
       await channel.send({ chatId: msg.chatId, text: "Tell me your full name, e.g. Ada Okafor." });
       return;
@@ -715,6 +736,19 @@ function fallbackReply(text: string): string {
   return "I dey here. Tell me wetin you wan do — check balance, make card, or send money.";
 }
 
+async function doSave(channel: Channel, sessionId: string, chatId: string, amount: Money): Promise<void> {
+  const res = await getMoneyProvider().saveToSavings(
+    { sessionId },
+    { amount, cadence: "once", idempotencyKey: randomUUID() },
+  );
+  if (!res.ok) {
+    await channel.send({ chatId, text: res.error.userMessage });
+    return;
+  }
+  await ev(sessionId, { kind: "savings", amountMinor: amount.minor, currency: amount.currency });
+  await channel.send({ chatId, text: `🐷 Saved ${formatMoney(res.data.savedNow)} ✅` });
+}
+
 async function tryHandleLocalIntent(channel: Channel, sessionId: string, chatId: string, text: string): Promise<boolean> {
   const lower = text.toLowerCase();
   const provider = getMoneyProvider();
@@ -798,18 +832,11 @@ async function tryHandleLocalIntent(channel: Channel, sessionId: string, chatId:
   if (/save|savings/i.test(lower)) {
     const amount = parseAmount(text, "NGN");
     if (!amount) {
-      await channel.send({ chatId, text: "Tell me the amount you wan save, and I go help you with the rest." });
+      await getStore().setFlow(sessionId, { kind: "await_save_amount" });
+      await channel.send({ chatId, text: "How much you wan save? Tell me the amount, e.g. 2k or 2000." });
       return true;
     }
-    const res = await provider.saveToSavings(
-      { sessionId },
-      { amount, cadence: "once", idempotencyKey: randomUUID() },
-    );
-    if (!res.ok) {
-      await channel.send({ chatId, text: res.error.userMessage });
-      return true;
-    }
-    await channel.send({ chatId, text: `Saved ${formatMoney(res.data.savedNow)} now. ✅` });
+    await doSave(channel, sessionId, chatId, amount);
     return true;
   }
 

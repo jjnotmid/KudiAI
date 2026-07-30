@@ -13,15 +13,11 @@ try {
   /* ignore */
 }
 
-const TABLES = [
-  "kudi_flow",
-  "kudi_pending",
-  "kudi_events",
-  "kudi_bmoni_accounts",
-  "kudi_pins",
-  "kudi_turns",
-  "kudi_nonces",
-];
+// Transient state only. Accounts + PINs are preserved so funded/onboarded users
+// aren't wiped. Pass --all to also clear accounts + pins (a hard reset).
+const TRANSIENT = ["kudi_flow", "kudi_pending", "kudi_events", "kudi_turns", "kudi_nonces"];
+const ACCOUNTS = ["kudi_bmoni_accounts", "kudi_pins"];
+const TABLES = process.argv.includes("--all") ? [...TRANSIENT, ...ACCOUNTS] : TRANSIENT;
 
 async function main(): Promise<void> {
   const url = process.env.SUPABASE_URL;
