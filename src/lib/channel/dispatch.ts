@@ -164,6 +164,7 @@ type Flow =
   | { kind: "confirm_delete" }
   | { kind: "await_save_amount" }
   | { kind: "await_withdraw" }
+  | { kind: "await_afford" }
   | { kind: "await_convert"; from: "NGN" | "USD"; to: "NGN" | "USD" }
   | { kind: "login_pin"; tries: number }
   | { kind: "login_slot_pin"; slot: number; tries: number }
@@ -550,6 +551,22 @@ export async function handleMessage(channel: Channel, msg: IncomingMessage): Pro
     }
     await getStore().setFlow(sessionId, null);
     await doSave(channel, sessionId, msg.chatId, amount);
+    return;
+  }
+
+  if (state?.kind === "await_afford") {
+    if (lower === "cancel") {
+      await getStore().setFlow(sessionId, null);
+      await channel.send({ chatId: msg.chatId, text: "Okay, no wahala." });
+      return;
+    }
+    const cost = extractAffordPrice(text) ?? knownItemPrice(lower) ?? parseAmount(text, "NGN");
+    if (!cost) {
+      await channel.send({ chatId: msg.chatId, text: "Tell me the price, e.g. 3m or 2,500,000." });
+      return;
+    }
+    await getStore().setFlow(sessionId, null);
+    await doAfford(channel, sessionId, msg.chatId, cost);
     return;
   }
 
@@ -1159,6 +1176,74 @@ async function doWithdraw(channel: Channel, sessionId: string, chatId: string, a
   });
 }
 
+/** Extract a price only when it carries a real money marker (₦, k, m, naira, $).
+ * A bare number inside a product name ("iPhone 17 Pro Max") is NOT a price. */
+function extractAffordPrice(text: string): Money | null {
+  const m = text.match(/(?:₦|\$)\s*\d[\d,]*(?:\.\d+)?|\d[\d,]*(?:\.\d+)?\s*(?:k|m|bn|thousand|million|billion|naira|dollars?|usd|bucks)\b/i);
+  if (!m) return null;
+  return parseAmount(m[0], "NGN");
+}
+
+/** Rough Nigerian street prices for common big-ticket items, so "can I afford an
+ * iPhone 17 Pro Max?" gets a sensible answer without the user quoting a price. */
+const KNOWN_ITEM_PRICES: { re: RegExp; minor: number }[] = [
+  { re: /iphone\s*(1[5-9]|20)?\s*pro\s*max|iphone\s*pro\s*max/i, minor: 280_000_000 },
+  { re: /iphone\s*(1[5-9]|20)?\s*pro/i, minor: 230_000_000 },
+  { re: /iphone/i, minor: 180_000_000 },
+  { re: /macbook\s*pro/i, minor: 350_000_000 },
+  { re: /macbook|mac\s*book/i, minor: 250_000_000 },
+  { re: /ps5|playstation\s*5/i, minor: 95_000_000 },
+  { re: /(samsung|galaxy)\s*s\s*2\d|galaxy\s*z\s*fold/i, minor: 200_000_000 },
+];
+function knownItemPrice(lower: string): Money | null {
+  const hit = KNOWN_ITEM_PRICES.find((k) => k.re.test(lower));
+  return hit ? money(hit.minor, "NGN") : null;
+}
+
+/** The affordability verdict from a known cost. Shared by the one-shot and the
+ * "how much e cost?" follow-up. */
+async function doAfford(channel: Channel, sessionId: string, chatId: string, cost: Money): Promise<void> {
+  const bal = await getMoneyProvider().getBalances({ sessionId });
+  const ngn = bal.ok ? (bal.data.find((b) => b.currency === "NGN")?.available.minor ?? 0) : 0;
+  const saved = await savingsTotalMinor(sessionId);
+  const pool = ngn + saved;
+  if (ngn >= cost.minor) {
+    const after = ngn - cost.minor;
+    const pct = Math.round((cost.minor / Math.max(1, ngn)) * 100);
+    const note =
+      pct >= 70
+        ? `But e go chop ${pct}% of your money — you go remain only ${formatMoney(money(after, "NGN"))}. Think am well.`
+        : `You go still get ${formatMoney(money(after, "NGN"))} left. E dey manageable 👍`;
+    await channel.send({
+      chatId,
+      text: `💡 <b>Yes, you fit afford am.</b>\n\nCost: ${formatMoney(cost)}\nWallet: ${formatMoney(money(ngn, "NGN"))}\n\n${note}`,
+    });
+    return;
+  }
+  if (pool >= cost.minor) {
+    const need = cost.minor - ngn;
+    await channel.send({
+      chatId,
+      text:
+        `💡 <b>Almost — you go need your savings.</b>\n\n` +
+        `Cost: ${formatMoney(cost)}\nWallet: ${formatMoney(money(ngn, "NGN"))} + Savings: ${formatMoney(money(saved, "NGN"))}\n\n` +
+        `Move ${formatMoney(money(need, "NGN"))} from savings and you fit buy am.`,
+    });
+    return;
+  }
+  const shortfall = cost.minor - pool;
+  const weeks = 13;
+  const weekly = Math.max(10000, Math.ceil(shortfall / weeks / 10000) * 10000);
+  const realWeeks = Math.ceil(shortfall / weekly);
+  await channel.send({
+    chatId,
+    text:
+      `💡 <b>Not yet.</b>\n\n` +
+      `Cost: ${formatMoney(cost)}\nYou get: ${formatMoney(money(pool, "NGN"))} (wallet + savings)\nYou short: ${formatMoney(money(shortfall, "NGN"))}\n\n` +
+      `If you save ${formatMoney(money(weekly, "NGN"))} every week, you go reach in about ${realWeeks} weeks. Say “save ${Math.round(weekly / 100000)}k” to start 🐷`,
+  });
+}
+
 /** Validate funds then put a conversion behind the PIN gate. Shared by the
  * one-shot ("change 10k to dollar") and two-step (tap Convert → type amount) paths. */
 async function startConvert(
@@ -1219,51 +1304,14 @@ async function tryHandleLocalIntent(channel: Channel, sessionId: string, chatId:
 
   // 💡 Financial advice — "can I afford X?" Deterministic, uses the real balance.
   if (/\bafford\b|can i (buy|get|afford)|fit (i )?(buy|afford|get)|do i have enough|enough (money|cash)|i wan(t)? (to )?buy/i.test(lower)) {
-    const amount = parseAmount(text, "NGN");
-    if (!amount) {
-      await channel.send({ chatId, text: "How much the thing cost? e.g. “can I afford an iPhone of 5m?”" });
+    const cost = extractAffordPrice(text) ?? knownItemPrice(lower);
+    if (!cost) {
+      // No trustworthy price (e.g. "iphone 17 pro max" — the 17 is a model, not a price).
+      await getStore().setFlow(sessionId, { kind: "await_afford" });
+      await channel.send({ chatId, text: "How much e cost? Tell me the price, e.g. 3m or 2,500,000." });
       return true;
     }
-    const bal = await provider.getBalances({ sessionId });
-    const ngn = bal.ok ? (bal.data.find((b) => b.currency === "NGN")?.available.minor ?? 0) : 0;
-    const saved = await savingsTotalMinor(sessionId);
-    const pool = ngn + saved;
-    const cost = amount.minor;
-    if (ngn >= cost) {
-      const after = ngn - cost;
-      const pct = Math.round((cost / Math.max(1, ngn)) * 100);
-      const note =
-        pct >= 70
-          ? `But e go chop ${pct}% of your money — you go remain only ${formatMoney(money(after, "NGN"))}. Think am well.`
-          : `You go still get ${formatMoney(money(after, "NGN"))} left. E dey manageable 👍`;
-      await channel.send({
-        chatId,
-        text: `💡 <b>Yes, you fit afford am.</b>\n\nCost: ${formatMoney(amount)}\nWallet: ${formatMoney(money(ngn, "NGN"))}\n\n${note}`,
-      });
-      return true;
-    }
-    if (pool >= cost) {
-      const need = cost - ngn;
-      await channel.send({
-        chatId,
-        text:
-          `💡 <b>Almost — you go need your savings.</b>\n\n` +
-          `Cost: ${formatMoney(amount)}\nWallet: ${formatMoney(money(ngn, "NGN"))} + Savings: ${formatMoney(money(saved, "NGN"))}\n\n` +
-          `Move ${formatMoney(money(need, "NGN"))} from savings and you fit buy am. Say “withdraw ${Math.ceil(need / 100000) * 1000}k”.`,
-      });
-      return true;
-    }
-    const shortfall = cost - pool;
-    const weeks = 13; // ~3 months
-    const weekly = Math.max(10000, Math.ceil(shortfall / weeks / 10000) * 10000);
-    const realWeeks = Math.ceil(shortfall / weekly);
-    await channel.send({
-      chatId,
-      text:
-        `💡 <b>Not yet.</b>\n\n` +
-        `Cost: ${formatMoney(amount)}\nYou get: ${formatMoney(money(pool, "NGN"))} (wallet + savings)\nYou short: ${formatMoney(money(shortfall, "NGN"))}\n\n` +
-        `If you save ${formatMoney(money(weekly, "NGN"))} every week, you go reach in about ${realWeeks} weeks. Say “save ${Math.round(weekly / 100000)}k” to start 🐷`,
-    });
+    await doAfford(channel, sessionId, chatId, cost);
     return true;
   }
 
