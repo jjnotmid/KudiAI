@@ -660,6 +660,12 @@ export async function handleMessage(channel: Channel, msg: IncomingMessage): Pro
       await channel.send({ chatId: msg.chatId, text: "Send a correct email, e.g. name@email.com." });
       return;
     }
+    // Demo mode: skip the email code so judges/testers aren't blocked on an inbox.
+    if (process.env.DEMO_SKIP_EMAIL_VERIFY === "1" || process.env.DEMO_SKIP_EMAIL_VERIFY === "true") {
+      await getStore().setFlow(sessionId, { kind: "su_phone", fullName: state.fullName, email });
+      await channel.send({ chatId: msg.chatId, text: "Email saved ✅. Now your phone number? e.g. 08012345678" });
+      return;
+    }
     const c = code6();
     const sent = await sendVerificationEmail(email, state.fullName, c);
     if (sent) {
