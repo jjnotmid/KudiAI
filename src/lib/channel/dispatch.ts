@@ -660,8 +660,9 @@ export async function handleMessage(channel: Channel, msg: IncomingMessage): Pro
       await channel.send({ chatId: msg.chatId, text: "Send a correct email, e.g. name@email.com." });
       return;
     }
-    // Demo mode: skip the email code so judges/testers aren't blocked on an inbox.
-    if (process.env.DEMO_SKIP_EMAIL_VERIFY === "1" || process.env.DEMO_SKIP_EMAIL_VERIFY === "true") {
+    // Email code verification is OFF by default for the judged demo so testers are
+    // never blocked on an inbox. Set REQUIRE_EMAIL_VERIFY=1 to turn it back on.
+    if (process.env.REQUIRE_EMAIL_VERIFY !== "1") {
       await getStore().setFlow(sessionId, { kind: "su_phone", fullName: state.fullName, email });
       await channel.send({ chatId: msg.chatId, text: "Email saved ✅. Now your phone number? e.g. 08012345678" });
       return;
