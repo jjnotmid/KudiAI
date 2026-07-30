@@ -75,6 +75,18 @@ export class SupabaseStore implements Store {
     const { error } = await this.db.from("kudi_flow").upsert({ session_id: sessionId, state }, { onConflict: "session_id" });
     if (error) throw new Error(`supabase setFlow: ${error.message}`);
   }
+  async getLastSeen(sessionId: string): Promise<number | null> {
+    const { data, error } = await this.db
+      .from("kudi_sessions")
+      .select("last_seen")
+      .eq("session_id", sessionId)
+      .maybeSingle();
+    if (error || !data) return null;
+    return data.last_seen === null ? null : Number(data.last_seen);
+  }
+  async setLastSeen(sessionId: string, ts: number): Promise<void> {
+    await this.db.from("kudi_sessions").upsert({ session_id: sessionId, last_seen: ts }, { onConflict: "session_id" });
+  }
   async putPending(ref: string, data: PendingConfirmRecord): Promise<void> {
     const { error } = await this.db
       .from("kudi_pending")

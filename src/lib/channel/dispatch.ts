@@ -28,6 +28,25 @@ const LARGE_TRANSFER_MINOR = 5_000_000; // ₦50,000 → flag for the admin (not
 const TXN_FEE_MINOR = 2_500; // ₦25 flat fee on every money move (revenue)
 const CARD_FEE_MINOR = 20_000; // ₦200 to issue a virtual card (revenue)
 const USD_ACCOUNT_FEE_MINOR = 50_000; // ₦500 to open a USD account (revenue)
+const SESSION_LOCK_MS = 5 * 60_000; // idle this long → require the login PIN on return
+
+/**
+ * App-lock: if a set-up user returns after being idle past SESSION_LOCK_MS (i.e.
+ * they left the chat and came back), require the PIN before anything else. Updates
+ * the last-seen stamp on every interaction. Returns true when it engaged the lock.
+ */
+async function maybeLock(channel: Channel, sessionId: string, chatId: string, state: Flow | null): Promise<boolean> {
+  const store = getStore();
+  const last = await store.getLastSeen(sessionId);
+  await store.setLastSeen(sessionId, Date.now());
+  if (state?.kind === "login_pin") return false; // the login_pin branch handles entry
+  if (state?.kind) return false; // mid multi-step flow — don't interrupt
+  if (!(await store.getPinHash(sessionId))) return false; // not set up yet
+  if (last == null || Date.now() - last <= SESSION_LOCK_MS) return false;
+  await store.setFlow(sessionId, { kind: "login_pin", tries: 0 });
+  await channel.send({ chatId, text: "🔒 <b>Welcome back.</b> Enter your PIN to unlock Kudi." });
+  return true;
+}
 
 /** Record the ₦25 platform fee for a completed money move. Reflected in balance. */
 async function chargeFee(sessionId: string, reason: string): Promise<void> {
@@ -71,7 +90,8 @@ type Flow =
   | { kind: "su_bvn"; fullName: string; dob: string }
   | { kind: "kyc_selfie" }
   | { kind: "confirm_delete" }
-  | { kind: "await_save_amount" };
+  | { kind: "await_save_amount" }
+  | { kind: "login_pin"; tries: number };
 
 function code6(): string {
   return String(randomInt(100000, 1000000));
@@ -119,6 +139,30 @@ export async function handleMessage(channel: Channel, msg: IncomingMessage): Pro
 
   const state = (await getStore().getFlow(sessionId)) as Flow | null;
   log("info", "msg.in", { sessionId, text: text.slice(0, 60), flow: state?.kind ?? "none", voice: msg.fromVoice });
+
+  // App-lock: when locked, the only thing we accept is the PIN to unlock.
+  if (state?.kind === "login_pin") {
+    await channel.deleteMessage?.(msg.chatId, msg.messageId);
+    if (!isValidPinFormat(text)) {
+      await channel.send({ chatId: msg.chatId, text: "🔒 Enter your 4-digit PIN to unlock." });
+      return;
+    }
+    const ph = await store.getPinHash(sessionId);
+    if (!ph || !verifyPin(text, ph)) {
+      const tries = (state.tries ?? 0) + 1;
+      await ev(sessionId, { kind: "login_failed", flagged: true, detail: { tries } });
+      await getStore().setFlow(sessionId, { kind: "login_pin", tries: tries >= 5 ? 0 : tries });
+      await channel.send({ chatId: msg.chatId, text: "Wrong PIN. Try again." });
+      return;
+    }
+    await getStore().setFlow(sessionId, null);
+    await store.setLastSeen(sessionId, Date.now());
+    await ev(sessionId, { kind: "login_success" });
+    await channel.send({ chatId: msg.chatId, text: "🔓 Unlocked. Welcome back! Wetin you wan do?", buttons: QUICK_BUTTONS });
+    return;
+  }
+  // Otherwise, engage the lock if they've been away.
+  if (await maybeLock(channel, sessionId, msg.chatId, state)) return;
 
   // /start (Telegram sends this automatically on first open) → clean entry.
   if (lower === "/start" || lower === "/start@kudiai_bot") {
@@ -596,6 +640,8 @@ export async function handlePhoto(
     } catch (e) {
       log("error", "kyc.selfie_failed", { sessionId, detail: String(e) });
     }
+    // Privacy: once the photo is saved/verified, remove it from the chat (like the PIN).
+    await channel.deleteMessage?.(msg.chatId, msg.messageId);
     const { activated } = await finalizeKyc(sessionId);
     await ev(sessionId, { kind: "kyc_completed", detail: { activated, uploaded } });
     await getStore().setFlow(sessionId, { kind: "set_pin" });

@@ -52,6 +52,9 @@ export interface Store {
    * Persisted so the bot can run stateless on serverless (webhook). */
   getFlow(sessionId: string): Promise<unknown | null>;
   setFlow(sessionId: string, state: unknown | null): Promise<void>;
+  /** Last-interaction timestamp (ms). Drives the app-lock / login-PIN on return. */
+  getLastSeen(sessionId: string): Promise<number | null>;
+  setLastSeen(sessionId: string, ts: number): Promise<void>;
   /** Pending value-moving confirmations, keyed by a short ref. */
   putPending(ref: string, data: PendingConfirmRecord): Promise<void>;
   getPending(ref: string): Promise<PendingConfirmRecord | null>;

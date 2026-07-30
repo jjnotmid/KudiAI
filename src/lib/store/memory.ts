@@ -51,12 +51,19 @@ export class MemoryStore implements Store {
 
   private readonly flows = new Map<string, unknown>();
   private readonly pendings = new Map<string, PendingConfirmRecord>();
+  private readonly lastSeen = new Map<string, number>();
   async getFlow(sessionId: string): Promise<unknown | null> {
     return this.flows.get(sessionId) ?? null;
   }
   async setFlow(sessionId: string, state: unknown | null): Promise<void> {
     if (state === null) this.flows.delete(sessionId);
     else this.flows.set(sessionId, state);
+  }
+  async getLastSeen(sessionId: string): Promise<number | null> {
+    return this.lastSeen.get(sessionId) ?? null;
+  }
+  async setLastSeen(sessionId: string, ts: number): Promise<void> {
+    this.lastSeen.set(sessionId, ts);
   }
   async putPending(ref: string, data: PendingConfirmRecord): Promise<void> {
     this.pendings.set(ref, data);

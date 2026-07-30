@@ -69,6 +69,13 @@ create table if not exists public.kudi_pending (
   created_at  timestamptz not null default now()
 );
 
+-- Per-session last-interaction time — powers the app-lock / login-PIN on return.
+create table if not exists public.kudi_sessions (
+  session_id  text        primary key,
+  last_seen   bigint      not null,
+  updated_at  timestamptz not null default now()
+);
+
 alter table public.kudi_turns          enable row level security;
 alter table public.kudi_nonces         enable row level security;
 alter table public.kudi_bmoni_accounts enable row level security;
@@ -76,3 +83,4 @@ alter table public.kudi_pins           enable row level security;
 alter table public.kudi_events         enable row level security;
 alter table public.kudi_flow           enable row level security;
 alter table public.kudi_pending        enable row level security;
+alter table public.kudi_sessions       enable row level security;
