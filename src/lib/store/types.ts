@@ -55,6 +55,12 @@ export interface Store {
   /** Last-interaction timestamp (ms). Drives the app-lock / login-PIN on return. */
   getLastSeen(sessionId: string): Promise<number | null>;
   setLastSeen(sessionId: string, ts: number): Promise<void>;
+  /** Which account slot a chat is logged into (1 = original, 0 = logged out, ≥2 = extra). */
+  getActiveSlot(chatId: string): Promise<number>;
+  setActiveSlot(chatId: string, slot: number): Promise<void>;
+  /** The accounts a chat has, for the login picker. */
+  getSlots(chatId: string): Promise<{ slot: number; label: string }[]>;
+  addSlot(chatId: string, slot: number, label: string): Promise<void>;
   /** Pending value-moving confirmations, keyed by a short ref. */
   putPending(ref: string, data: PendingConfirmRecord): Promise<void>;
   getPending(ref: string): Promise<PendingConfirmRecord | null>;

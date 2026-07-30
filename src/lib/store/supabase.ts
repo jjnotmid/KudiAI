@@ -87,6 +87,23 @@ export class SupabaseStore implements Store {
   async setLastSeen(sessionId: string, ts: number): Promise<void> {
     await this.db.from("kudi_sessions").upsert({ session_id: sessionId, last_seen: ts }, { onConflict: "session_id" });
   }
+
+  async getActiveSlot(chatId: string): Promise<number> {
+    const { data, error } = await this.db.from("kudi_active").select("slot").eq("chat_id", chatId).maybeSingle();
+    if (error || !data) return 1; // default: the original account
+    return Number(data.slot);
+  }
+  async setActiveSlot(chatId: string, slot: number): Promise<void> {
+    await this.db.from("kudi_active").upsert({ chat_id: chatId, slot }, { onConflict: "chat_id" });
+  }
+  async getSlots(chatId: string): Promise<{ slot: number; label: string }[]> {
+    const { data, error } = await this.db.from("kudi_slots").select("slot,label").eq("chat_id", chatId).order("slot");
+    if (error || !data) return [];
+    return data.map((r) => ({ slot: Number(r.slot), label: String(r.label) }));
+  }
+  async addSlot(chatId: string, slot: number, label: string): Promise<void> {
+    await this.db.from("kudi_slots").upsert({ chat_id: chatId, slot, label }, { onConflict: "chat_id,slot" });
+  }
   async putPending(ref: string, data: PendingConfirmRecord): Promise<void> {
     const { error } = await this.db
       .from("kudi_pending")

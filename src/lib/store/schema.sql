@@ -76,6 +76,23 @@ create table if not exists public.kudi_sessions (
   updated_at  timestamptz not null default now()
 );
 
+-- Which account slot a Telegram chat is currently logged into.
+-- slot 1 = the original account (key tg:<chat>), 0 = logged out, >=2 = extra accounts.
+create table if not exists public.kudi_active (
+  chat_id     text        primary key,
+  slot        int         not null,
+  updated_at  timestamptz not null default now()
+);
+
+-- The accounts a chat has created, for the login picker.
+create table if not exists public.kudi_slots (
+  chat_id     text        not null,
+  slot        int         not null,
+  label       text        not null,
+  created_at  timestamptz not null default now(),
+  primary key (chat_id, slot)
+);
+
 alter table public.kudi_turns          enable row level security;
 alter table public.kudi_nonces         enable row level security;
 alter table public.kudi_bmoni_accounts enable row level security;
@@ -84,3 +101,5 @@ alter table public.kudi_events         enable row level security;
 alter table public.kudi_flow           enable row level security;
 alter table public.kudi_pending        enable row level security;
 alter table public.kudi_sessions       enable row level security;
+alter table public.kudi_active         enable row level security;
+alter table public.kudi_slots          enable row level security;

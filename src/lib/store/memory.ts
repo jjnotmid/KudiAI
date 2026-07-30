@@ -65,6 +65,24 @@ export class MemoryStore implements Store {
   async setLastSeen(sessionId: string, ts: number): Promise<void> {
     this.lastSeen.set(sessionId, ts);
   }
+
+  private readonly activeSlot = new Map<string, number>();
+  private readonly slots = new Map<string, { slot: number; label: string }[]>();
+  async getActiveSlot(chatId: string): Promise<number> {
+    return this.activeSlot.get(chatId) ?? 1;
+  }
+  async setActiveSlot(chatId: string, slot: number): Promise<void> {
+    this.activeSlot.set(chatId, slot);
+  }
+  async getSlots(chatId: string): Promise<{ slot: number; label: string }[]> {
+    return [...(this.slots.get(chatId) ?? [])];
+  }
+  async addSlot(chatId: string, slot: number, label: string): Promise<void> {
+    const list = this.slots.get(chatId) ?? [];
+    const next = list.filter((s) => s.slot !== slot);
+    next.push({ slot, label });
+    this.slots.set(chatId, next);
+  }
   async putPending(ref: string, data: PendingConfirmRecord): Promise<void> {
     this.pendings.set(ref, data);
   }

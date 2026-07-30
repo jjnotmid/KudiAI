@@ -112,8 +112,33 @@ const QUICK_BUTTONS = [
   [{ label: "Send money", data: "quick:send", kind: "default" }, { label: "Save money", data: "quick:save", kind: "default" }],
 ] as const;
 
-function sessionFor(chatId: string): string {
-  return `tg:${chatId}`;
+/** The storage key for a given account slot. Slot 1 = the original account
+ * (kept at the legacy key for backward-compat); slots ≥2 are extra accounts. */
+function sessionKeyForSlot(chatId: string, slot: number): string {
+  return slot <= 1 ? `tg:${chatId}` : `tg:${chatId}#${slot}`;
+}
+
+/** Resolve the active session key for a chat. slot 0 (logged out) → a scratch
+ * "anon" session that holds only the login/signup handshake. */
+async function resolveSession(chatId: string): Promise<string> {
+  const slot = await getStore().getActiveSlot(chatId);
+  return slot <= 0 ? `anon:${chatId}` : sessionKeyForSlot(chatId, slot);
+}
+
+/** The accounts a chat can log into (those with a PIN set), for the picker. */
+async function accountList(chatId: string): Promise<{ slot: number; label: string }[]> {
+  const store = getStore();
+  const out = new Map<number, string>();
+  if (await store.getPinHash(sessionKeyForSlot(chatId, 1))) out.set(1, "Account 1");
+  for (const s of await store.getSlots(chatId)) {
+    if (await store.getPinHash(sessionKeyForSlot(chatId, s.slot))) out.set(s.slot, s.label);
+  }
+  return [...out.entries()].map(([slot, label]) => ({ slot, label })).sort((a, b) => a.slot - b.slot);
+}
+
+async function accountListText(chatId: string): Promise<string> {
+  const accts = await accountList(chatId);
+  return accts.length ? accts.map((a) => `  <b>${a.slot}</b>) ${a.label}`).join("\n") : "  (none yet)";
 }
 
 type TransferDraft = {
@@ -141,6 +166,7 @@ type Flow =
   | { kind: "await_withdraw" }
   | { kind: "await_convert"; from: "NGN" | "USD"; to: "NGN" | "USD" }
   | { kind: "login_pin"; tries: number }
+  | { kind: "login_slot_pin"; slot: number; tries: number }
   | { kind: "reveal_card"; tries: number };
 
 function code6(): string {
@@ -171,9 +197,92 @@ async function ev(sessionId: string, event: KudiEvent): Promise<void> {
   }
 }
 
-export async function handleMessage(channel: Channel, msg: IncomingMessage): Promise<void> {
-  const sessionId = sessionFor(msg.chatId);
+/** Handle a chat that is logged out: log into an account, or open a new one. */
+async function handleLoggedOut(
+  channel: Channel,
+  msg: IncomingMessage,
+  sessionId: string,
+  text: string,
+  lower: string,
+): Promise<void> {
   const store = getStore();
+  const state = (await store.getFlow(sessionId)) as Flow | null;
+
+  // Entering the PIN for a chosen account.
+  if (state?.kind === "login_slot_pin") {
+    await channel.deleteMessage?.(msg.chatId, msg.messageId);
+    if (lower === "cancel") {
+      await store.setFlow(sessionId, null);
+      await channel.send({ chatId: msg.chatId, text: "Okay. Reply <b>login 1</b> or <b>new</b>." });
+      return;
+    }
+    if (!isValidPinFormat(text)) {
+      await channel.send({ chatId: msg.chatId, text: `🔒 Enter the 4-digit PIN for Account ${state.slot}.` });
+      return;
+    }
+    const key = sessionKeyForSlot(msg.chatId, state.slot);
+    const ph = await store.getPinHash(key);
+    if (!ph || !verifyPin(text, ph)) {
+      const tries = state.tries + 1;
+      await ev(key, { kind: "login_failed", flagged: true, detail: { tries } });
+      await store.setFlow(sessionId, { kind: "login_slot_pin", slot: state.slot, tries: tries >= 5 ? 0 : tries });
+      await channel.send({ chatId: msg.chatId, text: "Wrong PIN. Try again, or type cancel." });
+      return;
+    }
+    await store.setFlow(sessionId, null);
+    await store.setActiveSlot(msg.chatId, state.slot);
+    await store.setLastSeen(key, Date.now());
+    await channel.send({ chatId: msg.chatId, text: "🔓 Logged in ✅" });
+    await sendDashboard(channel, key, msg.chatId);
+    return;
+  }
+
+  // "login N" → ask for that account's PIN.
+  const mLogin = lower.match(/^(?:log ?in|login|switch(?: to)?)\s+(\d+)/);
+  if (mLogin) {
+    const slot = Number(mLogin[1]);
+    if (!(await store.getPinHash(sessionKeyForSlot(msg.chatId, slot)))) {
+      await channel.send({ chatId: msg.chatId, text: `No Account ${slot}. Your accounts:\n${await accountListText(msg.chatId)}` });
+      return;
+    }
+    await store.setFlow(sessionId, { kind: "login_slot_pin", slot, tries: 0 });
+    await channel.send({ chatId: msg.chatId, text: `🔒 Enter the 4-digit PIN for Account ${slot}.` });
+    return;
+  }
+
+  // Explicit "new" → open a brand-new account (fresh slot). Greetings show the picker.
+  if (/^(new|new account|create( account)?|open( account)?|sign ?up|register|add account)\b/i.test(lower)) {
+    const existing = await accountList(msg.chatId);
+    const registered = await store.getSlots(msg.chatId);
+    const next = Math.max(1, ...existing.map((a) => a.slot), ...registered.map((s) => s.slot)) + 1;
+    await store.setActiveSlot(msg.chatId, next);
+    const key = sessionKeyForSlot(msg.chatId, next);
+    await store.setFlow(key, { kind: "su_name" });
+    await ev(key, { kind: "onboarding_start" });
+    await channel.send({
+      chatId: msg.chatId,
+      text:
+        "Let's open a new account 👋\n\n" +
+        "💡 During setup: type <b>back</b> to change your last answer, or <b>cancel</b> to stop.\n\n" +
+        "First, wetin be your full name?",
+    });
+    return;
+  }
+
+  // Otherwise, show the picker.
+  await channel.send({
+    chatId: msg.chatId,
+    text:
+      `🔒 You're logged out.\n\nYour accounts:\n${await accountListText(msg.chatId)}\n\n` +
+      `Reply <b>login 1</b> to enter one, or <b>new</b> to open a new account.`,
+  });
+}
+
+export async function handleMessage(channel: Channel, msg: IncomingMessage): Promise<void> {
+  const store = getStore();
+  const activeSlot = await store.getActiveSlot(msg.chatId);
+  const loggedOut = activeSlot <= 0;
+  const sessionId = loggedOut ? `anon:${msg.chatId}` : sessionKeyForSlot(msg.chatId, activeSlot);
 
   const gate = checkRateLimit(sessionId, "message");
   if (!gate.allowed) {
@@ -190,6 +299,30 @@ export async function handleMessage(channel: Channel, msg: IncomingMessage): Pro
   if (mapped) text = mapped;
   const lower = text.toLowerCase();
   void channel.sendTyping?.(msg.chatId); // "typing…" while we work (cosmetic, best-effort)
+
+  // ── Logged out: only the login handshake / opening a new account is allowed ──
+  if (loggedOut) {
+    await handleLoggedOut(channel, msg, sessionId, text, lower);
+    return;
+  }
+
+  // Global "log out" command (when not mid-flow).
+  if (/^(log ?out|logout|sign ?out|switch account|change account)\b/i.test(lower)) {
+    const st0 = (await store.getFlow(sessionId)) as Flow | null;
+    if (!st0?.kind) {
+      const slots = await store.getSlots(msg.chatId);
+      if (!slots.some((s) => s.slot === activeSlot)) await store.addSlot(msg.chatId, activeSlot, `Account ${activeSlot}`);
+      await store.setActiveSlot(msg.chatId, 0);
+      await store.setFlow(`anon:${msg.chatId}`, null);
+      await channel.send({
+        chatId: msg.chatId,
+        text:
+          `🔓 You don log out.\n\nYour accounts:\n${await accountListText(msg.chatId)}\n\n` +
+          `Reply <b>login 1</b> to go back in, or <b>new</b> to open a new account.`,
+      });
+      return;
+    }
+  }
 
   const state = (await getStore().getFlow(sessionId)) as Flow | null;
   log("info", "msg.in", { sessionId, text: text.slice(0, 60), flow: state?.kind ?? "none", voice: msg.fromVoice });
@@ -353,6 +486,9 @@ export async function handleMessage(channel: Channel, msg: IncomingMessage): Pro
     await store.setPinHash(sessionId, hashPin(text));
     await getStore().setFlow(sessionId, null);
     await ev(sessionId, { kind: "pin_set" });
+    // Register this account in the login picker so it can be switched to later.
+    const slot = await store.getActiveSlot(msg.chatId);
+    await store.addSlot(msg.chatId, slot, `Account ${slot}`);
     await channel.send({
       chatId: msg.chatId,
       text:
@@ -764,7 +900,7 @@ export async function handleCallback(
   channel: Channel,
   cb: { chatId: string; data: string; callbackId: string },
 ): Promise<void> {
-  const sessionId = sessionFor(cb.chatId);
+  const sessionId = await resolveSession(cb.chatId);
   const [kind, ref] = cb.data.split(":");
   await channel.answerCallback?.(cb.callbackId);
   if (kind === "cxl" && ref) {
@@ -805,7 +941,7 @@ export async function handlePhoto(
   bytes: Uint8Array,
   mime: string,
 ): Promise<void> {
-  const sessionId = sessionFor(msg.chatId);
+  const sessionId = await resolveSession(msg.chatId);
   const state = (await getStore().getFlow(sessionId)) as Flow | null;
   void channel.sendTyping?.(msg.chatId);
 
@@ -1068,7 +1204,8 @@ async function tryHandleLocalIntent(channel: Channel, sessionId: string, chatId:
         "💳 <b>Card</b> — “create a card” (₦200)\n" +
         "🪙 <b>Receive crypto</b> — “my wallet address”\n\n" +
         "🛡️ I automatically flag unusual transfers, and every transfer needs your PIN. A small ₦25 fee applies per transaction.\n\n" +
-        "You fit talk by text or voice note. Type <b>delete account</b> to close your account.",
+        "🔀 Type <b>log out</b> to switch accounts (you fit log back in anytime), or <b>delete account</b> to close am for good.\n\n" +
+        "You fit talk by text or voice note.",
       keyboard: MENU_KEYBOARD,
     });
     return true;
