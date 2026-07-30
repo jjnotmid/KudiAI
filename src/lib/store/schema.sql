@@ -31,7 +31,7 @@ create table if not exists public.kudi_bmoni_accounts (
   created_at      timestamptz not null default now()
 );
 
--- Hashed transaction PIN per session (scrypt salt:hash). Never plaintext.
+-- Hashed transaction PIN per session (2scrypt salt:hash). Never plaintext.
 create table if not exists public.kudi_pins (
   session_id  text        primary key,
   pin_hash    text        not null,

@@ -30,6 +30,11 @@ export class MemoryStore implements Store {
     this.events.push({ ...event, sessionId, at: Date.now() });
     if (this.events.length > 1000) this.events.shift();
   }
+  async sumSpent(sessionId: string): Promise<number> {
+    return this.events
+      .filter((e) => e.sessionId === sessionId && (e.kind === "transfer" || e.kind === "savings"))
+      .reduce((s, e) => s + (e.amountMinor ?? 0), 0);
+  }
 
   private readonly flows = new Map<string, unknown>();
   private readonly pendings = new Map<string, PendingConfirmRecord>();

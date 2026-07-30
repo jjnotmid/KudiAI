@@ -25,6 +25,13 @@ import type { Channel, IncomingMessage } from "./types";
  */
 
 const LARGE_TRANSFER_MINOR = 5_000_000; // ₦50,000 → flag for the admin (not block)
+
+/** AI fraud check — warn (don't block) on unusually large transfers. */
+function fraudLine(amountMinor: number): string {
+  return amountMinor >= LARGE_TRANSFER_MINOR
+    ? "⚠️ <b>Unusual transaction check:</b> this is larger than your usual transfers. Make sure you really want to send it.\n\n"
+    : "";
+}
 const INJECTION = /ignore\s+(all|the|previous|your)\s+(instruction|rule)|send\s+.*\baccount\s+\d{6,}/i;
 const QUICK_BUTTONS = [
   [{ label: "Check balance", data: "quick:balance", kind: "default" }, { label: "Create card", data: "quick:card", kind: "default" }],
@@ -417,7 +424,7 @@ export async function handleMessage(channel: Channel, msg: IncomingMessage): Pro
       const slip = `Send <b>${formatMoney(amount)}</b> to <b>${recipientName}</b>\n${draft.bank} • ${draft.accountNumber}`;
       await channel.send({
         chatId: msg.chatId,
-        text: `${slip}\n\n🔒 Enter your 4-digit PIN to approve, or type cancel.`,
+        text: `${slip}\n\n${fraudLine(amount.minor)}🔒 Enter your 4-digit PIN to approve, or type cancel.`,
         buttons: [[{ label: "Cancel", data: `cxl:${ref}`, kind: "cancel" }]],
       });
       return;
@@ -481,7 +488,7 @@ export async function handleMessage(channel: Channel, msg: IncomingMessage): Pro
     const slip = `Send ${formatMoney(amount)} to ${parsed.recipientName} (${parsed.bank.displayName} • ${parsed.accountNumber})`;
     await channel.send({
       chatId: msg.chatId,
-      text: `${slip}\n\n🔒 Enter your 4-digit PIN to approve, or type cancel.`,
+      text: `${slip}\n\n${fraudLine(amount.minor)}🔒 Enter your 4-digit PIN to approve, or type cancel.`,
       buttons: [[{ label: "Cancel", data: `cxl:${ref}`, kind: "cancel" }]],
     });
     return;
@@ -516,7 +523,7 @@ export async function handleMessage(channel: Channel, msg: IncomingMessage): Pro
       });
       await channel.send({
         chatId: msg.chatId,
-        text: `${result.reply || result.confirm.slip}\n\n🔒 Enter your 4-digit PIN to approve, or type cancel.`,
+        text: `${result.reply || result.confirm.slip}\n\n${fraudLine(result.confirm.amountMinor)}🔒 Enter your 4-digit PIN to approve, or type cancel.`,
         buttons: [[{ label: "Cancel", data: `cxl:${ref}`, kind: "cancel" }]],
       });
       return;

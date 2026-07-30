@@ -43,6 +43,9 @@ export interface Store {
   setPinHash(sessionId: string, pinHash: string): Promise<void>;
   /** Append an audit/analytics event (feeds the admin dashboard). Best-effort. */
   recordEvent(sessionId: string, event: KudiEvent): Promise<void>;
+  /** Sum of completed outbound amounts (transfers + savings) in minor units, for
+   * a session — used to reflect spend against the live wallet balance. */
+  sumSpent(sessionId: string): Promise<number>;
   /** Conversational flow state (signup step, PIN gate, etc.). Null = no state.
    * Persisted so the bot can run stateless on serverless (webhook). */
   getFlow(sessionId: string): Promise<unknown | null>;

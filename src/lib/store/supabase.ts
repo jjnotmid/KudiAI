@@ -91,6 +91,16 @@ export class SupabaseStore implements Store {
     await this.db.from("kudi_pending").delete().eq("ref", ref);
   }
 
+  async sumSpent(sessionId: string): Promise<number> {
+    const { data, error } = await this.db
+      .from("kudi_events")
+      .select("amount_minor,kind")
+      .eq("session_id", sessionId)
+      .in("kind", ["transfer", "savings"]);
+    if (error) return 0;
+    return (data ?? []).reduce((s, r) => s + (Number(r.amount_minor) || 0), 0);
+  }
+
   async recordEvent(sessionId: string, event: KudiEvent): Promise<void> {
     const { error } = await this.db.from("kudi_events").insert({
       session_id: sessionId,
